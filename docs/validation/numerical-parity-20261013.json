@@ -1,0 +1,61 @@
+{
+  "date": "2026-10-13",
+  "scope": "Retained seeded MONAI 1.6.0 CPU oracles compared with native FP32 MLX on Metal",
+  "runtime": {
+    "device": "Apple M1 Max",
+    "memory_gb": 64,
+    "macos": "27.0.1",
+    "mlx": "0.32.3",
+    "torch_reference": "2.14.1",
+    "monai_reference": "1.6.0",
+    "network_dtype": "float32",
+    "reference_runtime_used_for_inference": false
+  },
+  "acceptance": {
+    "graph_and_full_network_window_atol": 0.000001,
+    "graph_and_full_network_window_rtol": 0,
+    "graph_foreground_equality": "exact",
+    "existing_decoder_width_atol": 0.0001,
+    "existing_decoder_width_rtol": 0.0001,
+    "fixtures_changed": false,
+    "tolerances_changed": false
+  },
+  "results": {
+    "baseline_numerical_failures": 12,
+    "remaining_numerical_failures": 0,
+    "tests_passed": 185,
+    "tests_skipped": 7,
+    "tests_failed": 0,
+    "pytest_elapsed_seconds": 14.07,
+    "skipped_scope": "Optional released-checkpoint AMOS CUDA comparisons; checkpoint and upstream captures were not supplied",
+    "ruff": "passed",
+    "strict_pyright": "0 errors, 0 warnings"
+  },
+  "corrections": [
+    "InstanceNorm: two-pass statistics with compensated FP32 sums, rounded variance sum, fused bias coefficient and unfused output affine",
+    "Transpose convolution: contract input channels before adding spatial-kernel contributions in source z/y/x order",
+    "GELU: retain the ARM CPU erf and exponential approximation and its explicit FMA sequence",
+    "Biased projections: retain the small class-GEMM reduction and full/edge-tile bias placement for the pinned 48-feature graph"
+  ],
+  "independent_diagnostics": {
+    "fresh_monai_full_graph_matches_retained_oracles": "exact",
+    "controlled_encoder_convolution_inputs": "exact against source",
+    "corrected_encoder_instance_norm_inputs": "exact against source",
+    "gelu_on_recorded_class_mlp_inputs": "exact against source",
+    "pointwise_projection_profile": "Verified with independent random weights and inputs at 2048, 4096, 8192, 12288 and 32768 spatial rows; the admitted encoder requires at least 8192 rows",
+    "class_projection_profile": "Probed across 1 to 117 class rows, including both sides of the 12-row CPU GEMM dispatch boundary"
+  },
+  "reference_sources": [
+    "https://github.com/pytorch/pytorch/blob/v2.14.1/aten/src/ATen/native/cpu/batch_norm_kernel.cpp",
+    "https://github.com/pytorch/pytorch/blob/v2.14.1/aten/src/ATen/native/Normalization.cpp",
+    "https://github.com/pytorch/pytorch/blob/v2.14.1/aten/src/ATen/native/NaiveConvolutionTranspose3d.cpp",
+    "https://github.com/pytorch/pytorch/blob/v2.14.1/aten/src/ATen/native/vol2col.h",
+    "https://github.com/pytorch/pytorch/blob/v2.14.1/aten/src/ATen/cpu/vec/vec128/vec128_float_neon.h",
+    "https://github.com/pytorch/pytorch/blob/v2.14.1/aten/src/ATen/native/cpu/Gelu.h"
+  ],
+  "limits": [
+    "Seeded numerical parity does not establish pretrained-checkpoint accuracy or clinical performance",
+    "The projection accumulation profile was measured against the ARM Accelerate build of PyTorch 2.14.1",
+    "No CUDA reference case or end-to-end production performance benchmark was run"
+  ]
+}

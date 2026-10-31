@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mlx-segment-ct"
+version = "0.3.4"
+description = "Native MLX implementation of NV-Segment-CT (VISTA-3D)"
+readme = "README.md"
+classifiers = ["Operating System :: MacOS :: MacOS X"]
+requires-python = ">=3.13,<3.15"
+license = "Apache-2.0 AND BSD-3-Clause"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "Joseph Sandoval" }, { name = "Alfredo Sandoval Jr." }]
+dependencies = [
+  "medmlx-core==0.2.5",
+  "nibabel>=5.3,<6",
+  "numpy>=2.0,<3",
+  "scipy>=1.14,<2",
+]
+
+[project.urls]
+Homepage = "https://huggingface.co/MedMLX/vista3d-ct-mlx"
+Repository = "https://github.com/MedMLX/mlx-segment-ct"
+
+[project.entry-points."medmlx.models"]
+mlx-segment-ct = "mlx_segment_ct.medmlx:MODEL"
+mlx-segment-ctmr = "mlx_segment_ct.medmlx:CTMR_MODEL"
+
+[project.optional-dependencies]
+dev = [
+  "pyright==1.1.414",
+  "monai==1.6.1",
+  "torch>=2.13,<3",
+  "scikit-image>=0.25,<1",
+  "pytest>=8.4,<10",
+  "hypothesis>=6.140,<7",
+  "einops>=0.8,<1",
+  "ruff>=0.13,<1",
+  "scipy-stubs==1.18.1.1",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mlx_segment_ct"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+extend-select = ["TID251", "TID252", "ANN401"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pyright]
+include = ["scripts","src","tests"]
+extraPaths = ["src", "scripts"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+enableTypeIgnoreComments = false
+reportUnnecessaryTypeIgnoreComment = "error"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.Any" = {msg = "Use a precise type and parse untyped values at the boundary."}
+"typing_extensions.Any" = {msg = "Use a precise type and parse untyped values at the boundary."}
+
+[tool.uv]
+constraint-dependencies = ["setuptools>=84.1.0", "filelock>=4.2.1", "Pillow>=13,<14"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "src/mlx_segment_ct",
+  "pyproject.toml",
+  "README.md",
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
+]
