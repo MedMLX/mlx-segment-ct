@@ -6,10 +6,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, cast
-
-if TYPE_CHECKING:
-    from mlx_segment_ct._types import ArrayBoundary
+from typing import cast
 
 import numpy as np
 from scipy import ndimage

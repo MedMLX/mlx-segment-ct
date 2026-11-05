@@ -5,10 +5,7 @@ from __future__ import annotations
 from collections.abc import Buffer, Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from itertools import groupby, product
-from typing import TYPE_CHECKING, cast
-
-if TYPE_CHECKING:
-    from mlx_segment_ct._types import ArrayBoundary
+from typing import cast
 
 import numpy as np
 

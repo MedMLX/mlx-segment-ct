@@ -124,34 +124,6 @@ class CoordinatePredictor[ArrayT](Protocol):
         ...
 
 
-class PointOptions(TypedDict, total=False):
-    transpose: Required[bool]
-    sw_batch_size: int
-    with_coord: bool
-    mode: str
-    sw_device: object
-    device: object
-    overlap: float
-
-
-class PointWindowCall[ArrayT](Protocol):
-    def __call__(
-        self,
-        image: ArrayT,
-        *,
-        point_coords: HostArray,
-        point_labels: HostArray,
-        class_vector: HostArray | None,
-        prompt_class: HostArray | None,
-        patch_coords: PatchCoordinates,
-        prev_mask: HostArray | None,
-        transpose: bool,
-        **kwargs: object,
-    ) -> HostArray:
-        """Run point-conditioned window inference and return host scores."""
-        ...
-
-
 class Metrics(TypedDict):
     patch_seconds: list[float]
     padded_shape: NotRequired[list[int]]
@@ -459,18 +431,6 @@ class RollingMetricsBuilder(TypedDict):
     count_buffer_bytes: NotRequired[int]
     label_buffer_bytes: NotRequired[int]
     accumulator_dtype: NotRequired[str]
-
-
-class AutomaticDetails(TypedDict):
-    class_ids: list[int]
-    padded_shape: list[int]
-    label_names: list[str] | None
-
-
-class InteractiveDetails(TypedDict):
-    automatic_branch: bool
-    effective_point_labels: list[int]
-    point_start: int
 
 
 class NumericArrayArithmetic[ArrayT](Protocol):

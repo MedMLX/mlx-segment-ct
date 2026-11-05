@@ -51,7 +51,7 @@ class Projections:
     """
 
     def __init__(self, mx: CoreRuntime) -> None:
-        """Initialize the runtime and weights for projection layers."""
+        """Compile the ordered projection kernel; weights are passed per call."""
         self.mx = mx
         self.kernel = cast(
             MetalKernel,

@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from mlx.core import array
 
-    from mlx_segment_ct._types import ArrayBoundary
-
 import numpy as np
 
 from mlx_segment_ct._types import (
