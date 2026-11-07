@@ -251,7 +251,7 @@ wheels = [
 
 [[package]]
 name = "mlx-segment-ct"
-version = "0.3.5"
+version = "0.3.6"
 source = { editable = "." }
 dependencies = [
     { name = "medmlx-core" },
@@ -276,7 +276,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "einops", marker = "extra == 'dev'", specifier = ">=0.8,<1" },
-    { name = "medmlx-core", specifier = "==0.2.6" },
+    { name = "medmlx-core", specifier = ">=0.2.6,<0.3" },
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==0.32.4" },
     { name = "monai", marker = "extra == 'dev'", specifier = "==1.6.1" },
     { name = "nibabel", specifier = ">=5.3,<6" },
