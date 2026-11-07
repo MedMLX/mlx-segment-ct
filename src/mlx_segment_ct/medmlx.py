@@ -47,6 +47,8 @@ MODEL = {
     "label": "NV-Segment-CT",
     "task": "segmentation",
     "run": "mlx_segment_ct.medmlx:run",
+    # Measured MLX peak for all classes of a 768x768x101 abdominal CT; larger inputs need more.
+    "peak_memory_gb": 6.0,
     "summary": (
         "NVIDIA NV-Segment-CT/CTMR (VISTA-3D) CT and MRI segmentation: all supported classes, "
         "class prompts by name or ID, interactive points, or correction of previous logits."
@@ -59,6 +61,8 @@ CTMR_MODEL = {
     "label": "NV-Segment-CTMR",
     "task": "segmentation",
     "run": "mlx_segment_ct.medmlx:run_ctmr",
+    # Measured MLX peak for all classes of a 576x468x72 abdominal MRI; larger inputs need more.
+    "peak_memory_gb": 11.0,
     "summary": (
         "NVIDIA NV-Segment-CTMR CT/MRI segmentation; NVIDIA does not support point correction."
     ),

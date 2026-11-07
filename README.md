@@ -21,6 +21,8 @@ Segment CT anatomy automatically or with anatomy names and clicks, using NVIDIA 
 | :--- | :--- |
 | 3D CT · NIfTI | Anatomical labels on the input grid |
 
+Weights: 872 MB download for each of NV-Segment-CT and NV-Segment-CTMR. Peak MLX memory: 5.9 GB to segment all classes of a 768×768×101 abdominal CT with `mlx-segment-ct`, and 11.0 GB for all classes of a 576×468×72 abdominal MRI with `mlx-segment-ctmr`.
+
 ## Use with MedMLX
 
 The [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) is the lowest-friction way to use this package. It installs this runtime, downloads its weights on first use, and lets an AI agent describe, check and run `mlx-segment-ct` and `mlx-segment-ctmr` for you.
