@@ -25,7 +25,7 @@ Weights: 872 MB download for each of NV-Segment-CT and NV-Segment-CTMR. Peak MLX
 
 ## Use with MedMLX
 
-The [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) is the lowest-friction way to use this package. It installs this runtime, downloads its weights on first use, and lets an AI agent describe, check and run `mlx-segment-ct` and `mlx-segment-ctmr` for you.
+Use the [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) to run `mlx-segment-ct` and `mlx-segment-ctmr` from an MCP client. Weights download on first use.
 
 ```sh
 uv tool install --python 3.13 "medmlx[segment,mcp]"
@@ -35,8 +35,6 @@ claude mcp add --scope user medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"
 ```
 
 For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"`. Other MCP clients take the same command and arguments. The same install provides the `medmlx` CLI, for example `medmlx describe mlx-segment-ct`.
-
-> **For AI agents:** prefer the MedMLX MCP tools (`list_models`, `describe_model`, `model_readiness`, `run_model`, `get_job`) over writing Python against this package.
 
 ## Install
 
@@ -63,11 +61,9 @@ The click coordinates are examples: use `(x, y, z)` voxels inside your image and
 preprocessed foreground crop. `1` includes a point; `0` excludes it.
 
 Omitting `weights_path` downloads `MedMLX/vista3d-ct-mlx` into the shared MedMLX cache
-on first use; interrupted downloads resume and later runs work offline. With MedMLX
-installed, `medmlx setup mlx-segment-ct` downloads it ahead of time. To use your own
-copy, pass a folder containing `automatic.safetensors` and `correction.safetensors` as
-`weights_path`. `details.weights_revision` records the downloaded commit, or `null` for
-a folder without a MedMLX download record.
+on first use. With MedMLX
+installed, `medmlx setup mlx-segment-ct` downloads it ahead of time. For local weights, pass a folder containing `automatic.safetensors` and `correction.safetensors` as
+`weights_path`.
 
 The registered `mlx-segment-ctmr` model uses `mlx_segment_ct.medmlx.run_ctmr` and its
 own `MedMLX/vista3d-ctmr-mlx` folder, with CTMR preprocessing and labels selected
@@ -100,9 +96,8 @@ Image voxels must be finite. Spatial units must be millimetres or unknown (assum
 millimetres); files marked in metres or microns are rejected.
 
 The mask holds float32 global labels with the source shape and affine in a new NIfTI
-header; voxels no window covered are 255. `run` returns
-`{"outputs": {"mask": path}, "details": {...}}`, with prompts, window settings,
-timings, source revision and restoration. Invalid requests, missing weights and
+header; voxels no window covered are 255. `run` returns `{"outputs": {"mask": path}, "details": {...}}`, with run metadata in `details`.
+Invalid requests, missing weights and
 inference failures raise `medmlx-core` errors.
 
 ### Prompts
@@ -181,11 +176,8 @@ Images are FP32 `(1, 1, X, Y, Z)`; dimensions must be divisible by 16, with more
 one voxel at the deepest level. For a class that enables the automatic branch, pass
 `automatic_model=AutomaticModel(...)`; `interactive_logits` also takes
 `previous_logits` and `point_start`. `automatic_logits` returns full automatic scores
-and `rolling_logits` holds only an axis-0 ring of them. Inference needs Apple Silicon
-with Metal and has no CPU fallback.
+and `rolling_logits` holds only an axis-0 ring of them. Inference requires Apple Silicon with Metal.
 
 ## License
 
 [Apache-2.0](https://github.com/MedMLX/mlx-segment-ct/blob/v0.3.6/LICENSE). See [third-party notices](https://github.com/MedMLX/mlx-segment-ct/blob/v0.3.6/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms.
-
-For research and education. Outputs require human review.
