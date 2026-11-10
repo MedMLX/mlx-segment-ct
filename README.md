@@ -21,7 +21,10 @@ Segment CT anatomy automatically or with anatomy names and clicks, using NVIDIA 
 | :--- | :--- |
 | 3D CT · NIfTI | Anatomical labels on the input grid |
 
-Weights: 872 MB download for each of NV-Segment-CT and NV-Segment-CTMR. Peak MLX memory: 5.9 GB to segment all classes of a 768×768×101 abdominal CT with `mlx-segment-ct`, and 11.0 GB for all classes of a 576×468×72 abdominal MRI with `mlx-segment-ctmr`.
+| Model | Weights download | Peak MLX memory | Measured on |
+| :--- | ---: | ---: | :--- |
+| `mlx-segment-ct` | 872 MB | 5.9 GB | All classes of a 768×768×101 abdominal CT |
+| `mlx-segment-ctmr` | 872 MB | 11.0 GB | All classes of a 576×468×72 abdominal MRI |
 
 ## Use with MedMLX
 
@@ -62,20 +65,19 @@ run(
 The click coordinates are examples: use `(x, y, z)` voxels inside your image and its
 preprocessed foreground crop. `1` includes a point; `0` excludes it.
 
-Omitting `weights_path` downloads `MedMLX/vista3d-ct-mlx` into the shared MedMLX cache
-on first use. With MedMLX
-installed, `medmlx setup mlx-segment-ct` downloads it ahead of time. For local weights, pass a folder containing `automatic.safetensors` and `correction.safetensors` as
-`weights_path`.
+### Models and weights
 
-The registered `mlx-segment-ctmr` model uses `mlx_segment_ct.medmlx.run_ctmr` and its
-own `MedMLX/vista3d-ctmr-mlx` folder, with CTMR preprocessing and labels selected
-internally. The advanced `run(checkpoint="NV-Segment-CTMR", ...)`
-interface still accepts an explicitly supplied matching folder. It never substitutes
-CT weights for CTMR.
+| Model | Entry point | Weights | Notes |
+| :--- | :--- | :--- | :--- |
+| `mlx-segment-ct` | `mlx_segment_ct.medmlx.run` | [`MedMLX/vista3d-ct-mlx`](https://huggingface.co/MedMLX/vista3d-ct-mlx) | Automatic, named and point segmentation of CT |
+| `mlx-segment-ctmr` | `mlx_segment_ct.medmlx.run_ctmr` | [`MedMLX/vista3d-ctmr-mlx`](https://huggingface.co/MedMLX/vista3d-ctmr-mlx) | CT and MRI under noncommercial terms; NVIDIA does not support point segmentation with this checkpoint |
 
-The published [NV-Segment-CTMR weights](https://huggingface.co/MedMLX/vista3d-ctmr-mlx)
-cover CT and MRI under noncommercial terms. NVIDIA does not support interactive
-point segmentation with that checkpoint.
+Omitting `weights_path` downloads the model's weights into the shared MedMLX cache on
+first use; with MedMLX installed, `medmlx setup <model>` downloads them ahead of time.
+A local weights folder holds `automatic.safetensors` and `correction.safetensors`.
+`run_ctmr` selects the CTMR preprocessing and labels itself. `run(checkpoint="NV-Segment-CTMR", ...)`
+also accepts an explicitly supplied matching folder, and never substitutes CT weights
+for CTMR.
 
 ### Inputs and outputs
 
@@ -94,36 +96,55 @@ point segmentation with that checkpoint.
 | `restoration` | `"scores"` (default) or `"bundle"` (see below) |
 | `overwrite` | `False` by default; an existing mask is never replaced |
 
-Image voxels must be finite. Spatial units must be millimetres or unknown (assumed
-millimetres); files marked in metres or microns are rejected.
-
-The mask holds float32 global labels with the source shape and affine in a new NIfTI
-header; voxels no window covered are 255. `run` returns `{"outputs": {"mask": path}, "details": {...}}`, with run metadata in `details`.
-Invalid requests, missing weights and
-inference failures raise `medmlx-core` errors.
+- **Input:** voxels must be finite. Spatial units must be millimetres or unknown
+  (assumed millimetres); files marked in metres or microns are rejected.
+- **Mask:** float32 global labels with the source shape and affine, in a new NIfTI
+  header. Voxels no window covered are 255.
+- **Return value:** `{"outputs": {"mask": path}, "details": {...}}`, with run metadata in
+  `details`.
+- **Errors:** invalid requests, missing weights and inference failures raise
+  `medmlx-core` errors.
 
 ### Prompts
 
-Kidney (2), lung (20) and bone (21) expand to their subclasses for automatic
-segmentation. Point runs take at most one class and reject these coarse prompts.
-NV-Segment-CT IDs 133–254 need points. Names are limited to the bundle vocabulary.
+Names are limited to the bundle vocabulary. Kidney (2), lung (20) and bone (21) expand
+to their subclasses for automatic segmentation. Point runs take at most one class and
+reject these coarse prompts.
 
-NV-Segment-CTMR follows its bundle's inference configuration: CT or MRI input,
-1st–99th percentile scaling instead of the HU window, 192×192×128 windows and labels
-0–345. IDs 346–511 are zero-shot and need points; the deprecated IDs 133 and 137–145
-are not automatic. Without prompts, `modality` picks the all-classes set: `MRI_BODY`
-(50 classes), `CT_BODY` (the 117 NV-Segment-CT classes) or `MRI_BRAIN` (IDs 214–345).
-`MRI_BRAIN` expects skull-stripped T1 registered as the model card describes; that
-preprocessing is not included. The uncovered value 255 is also CTMR's ID for
-`Left-AnG---angular-gyrus`.
+| | NV-Segment-CT | NV-Segment-CTMR |
+| :--- | :--- | :--- |
+| Input | CT | CT or MRI |
+| Intensity scaling | HU window | 1st–99th percentile |
+| Automatic labels | IDs up to 132 | IDs 0–345, except the deprecated 133 and 137–145 |
+| Point-only labels | IDs 133–254 | IDs 346–511 (zero-shot) |
+
+Without prompts, NV-Segment-CTMR segments the all-classes set that `modality` picks:
+
+| `modality` | Classes |
+| :--- | :--- |
+| `"MRI_BODY"` (default) | 50 classes |
+| `"CT_BODY"` | The 117 NV-Segment-CT classes |
+| `"MRI_BRAIN"` | IDs 214–345; expects skull-stripped T1 registered as the model card describes (that preprocessing is not included) |
+
+NV-Segment-CTMR follows its bundle's inference configuration, with 192×192×128 windows.
+The uncovered value 255 is also NV-Segment-CTMR's ID for `Left-AnG---angular-gyrus`.
 
 ### Points and corrections
 
 Clicks must fall inside the source grid and the foreground crop after preprocessing.
-Codes are 0/1 exclude/include, 2/3 special exclude/include and -1 padding; for
-classes 25–29 and 117, 0/1 become 2/3. With no class the foreground label is 1. Class
-IDs up to 132 combine automatic and point scores; higher IDs use the point branch. A
-class prompt whose clicks are all padding keeps the automatic branch.
+Each click takes one code:
+
+| Code | Meaning |
+| ---: | :--- |
+| `1` | Include |
+| `0` | Exclude |
+| `3` | Special include |
+| `2` | Special exclude |
+| `-1` | Padding |
+
+For classes 25–29 and 117, `0` and `1` become `2` and `3`. With no class the foreground
+label is 1. Class IDs up to 132 combine automatic and point scores; higher IDs use the
+point branch. A class prompt whose clicks are all padding keeps the automatic branch.
 
 A correction passes the previous raw logits, before sigmoid or postprocessing:
 
@@ -143,10 +164,12 @@ objects' labels are not protected.
 
 ### Restoration
 
-The bundle decides labels on its 1.5 mm grid and restores them by nearest neighbour,
-so boundaries step on finer CTs. The default `restoration="scores"` instead
-interpolates the scores trilinearly at each source voxel and decides there;
-`restoration="bundle"` reproduces the bundle. Both agree on a 1.5 mm source.
+| `restoration` | Labels are decided |
+| :--- | :--- |
+| `"scores"` (default) | At each source voxel, from scores interpolated trilinearly |
+| `"bundle"` | On the bundle's 1.5 mm grid, then restored by nearest neighbour as the bundle does; boundaries step on finer CTs |
+
+Both agree on a 1.5 mm source.
 
 ### Python API
 
@@ -174,11 +197,13 @@ logits = interactive_logits(prepared.image[None], request, point, mx=mx, roi_siz
 labels = interactive_labels(logits, request)
 ```
 
-Images are FP32 `(1, 1, X, Y, Z)`; dimensions must be divisible by 16, with more than
-one voxel at the deepest level. For a class that enables the automatic branch, pass
-`automatic_model=AutomaticModel(...)`; `interactive_logits` also takes
-`previous_logits` and `point_start`. `automatic_logits` returns full automatic scores
-and `rolling_logits` holds only an axis-0 ring of them. Inference requires Apple Silicon with Metal.
+- Images are FP32 `(1, 1, X, Y, Z)`. Dimensions must be divisible by 16, with more than
+  one voxel at the deepest level.
+- For a class that enables the automatic branch, pass `automatic_model=AutomaticModel(...)`.
+  `interactive_logits` also takes `previous_logits` and `point_start`.
+- `automatic_logits` returns full automatic scores; `rolling_logits` holds only an
+  axis-0 ring of them.
+- Inference requires Apple Silicon with Metal.
 
 ## License
 
