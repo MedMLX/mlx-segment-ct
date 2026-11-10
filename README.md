@@ -152,7 +152,7 @@ objects' labels are not protected.
 | `restoration` | Labels are decided |
 | :--- | :--- |
 | `"scores"` (default) | At each source voxel, from scores interpolated trilinearly |
-| `"bundle"` | On the bundle's 1.5 mm grid, then restored by nearest neighbour as the bundle does; boundaries step on finer CTs |
+| `"bundle"` | On the bundle's 1.5 mm grid, then restored by nearest neighbor as the bundle does; boundaries step on finer CTs |
 
 Both agree on a 1.5 mm source.
 
