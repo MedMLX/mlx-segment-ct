@@ -13,7 +13,7 @@ Segment CT anatomy automatically or with anatomy names and clicks, using NVIDIA 
 
 [CT weights](https://huggingface.co/MedMLX/vista3d-ct-mlx) · [CTMR weights](https://huggingface.co/MedMLX/vista3d-ctmr-mlx) · [MedMLX](https://github.com/MedMLX/medmlx)
 
-<img src="docs/showcase.gif" alt="VISTA-3D CT segmentation with rotating 3D anatomy and axial slices" width="100%">
+<img src="https://raw.githubusercontent.com/MedMLX/mlx-segment-ct/main/docs/showcase.webp" alt="VISTA-3D CT segmentation with rotating 3D anatomy and axial slices" width="100%">
 
 </div>
 
