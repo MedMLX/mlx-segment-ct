@@ -111,7 +111,7 @@ def load_nifti(path: str | Path) -> NiftiImage:
     return cast("NiftiImage", image)
 
 
-def empty_weights(*args: object) -> dict[str, HostArray]:
+def empty_weights(*args: object, **kwargs: object) -> dict[str, HostArray]:
     """Return an empty parameter mapping for a synthetic model."""
     return {}
 

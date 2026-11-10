@@ -17,6 +17,7 @@ from mlx_segment_ct._types import (
     ArrayValue,
     BoolArray,
     HostArray,
+    JointPredictor,
     Metrics,
     PatchCoordinates,
     PointPredictor,
@@ -162,10 +163,12 @@ class PointWindowPredictor[ArrayT: ArrayValue]:
         mx: ArrayBoundary[ArrayT],
         metrics: Metrics,
         automatic_model: Callable[[ArrayT], ArrayT] | None = None,
+        joint_model: JointPredictor[ArrayT] | None = None,
     ) -> None:
         """Store the native point model, array runtime, and timing metrics."""
         self.model, self.mx, self.metrics = model, mx, metrics
         self.automatic_model = automatic_model
+        self.joint_model = joint_model
 
     def __call__(
         self,
@@ -193,16 +196,24 @@ class PointWindowPredictor[ArrayT: ArrayValue]:
         points, codes = update_point_to_patch(patch_coords[0], point_coords, point_labels)
         tick = time.perf_counter()
         automatic = None
+        logits = None
+        target = 132 if prompt_class is None else int(prompt_class.ravel()[0])
         if class_vector is not None:
             if self.automatic_model is None:
                 raise ValueError(
                     "Supported-class interactive inference requires an automatic model"
                 )
-            automatic = self.automatic_model(image)
-            self.mx.eval(automatic)
-            automatic = np.array(automatic)
-            if not np.isfinite(automatic).all():
-                raise ValueError("MLX automatic decoder returned non-finite logits")
+            if (
+                self.joint_model is not None and points is not None and codes is not None
+                and (codes != -1).any()
+            ):
+                automatic, logits = self.joint_logits(image, points, codes, target)
+            else:
+                automatic = self.automatic_model(image)
+                self.mx.eval(automatic)
+                automatic = np.array(automatic)
+                if not np.isfinite(automatic).all():
+                    raise ValueError("MLX automatic decoder returned non-finite logits")
         if points is None or codes is None or not (codes != -1).any():
             self.metrics["patch_seconds"].append(time.perf_counter() - tick)
             return (
@@ -210,8 +221,8 @@ class PointWindowPredictor[ArrayT: ArrayValue]:
                 if automatic is not None
                 else np.full((1, 1, *image.shape[2:]), self.NINF_VALUE, np.float32)
             )
-        target = 132 if prompt_class is None else int(prompt_class.ravel()[0])
-        logits = self.point_logits(image, points, codes, target)
+        if logits is None:
+            logits = self.point_logits(image, points, codes, target)
         if automatic is not None:
             logits = connected_components_combine(
                 automatic.swapaxes(0, 1), logits, points, codes, np.array([True])
@@ -226,6 +237,26 @@ class PointWindowPredictor[ArrayT: ArrayValue]:
             )
         self.metrics["patch_seconds"][-1] = time.perf_counter() - tick
         return logits.swapaxes(0, 1)
+
+    def joint_logits(
+        self, image: ArrayT, points: HostArray, codes: HostArray, target: int
+    ) -> tuple[HostArray, HostArray]:
+        """Evaluate both decoder outputs using one native encoder invocation."""
+        assert self.joint_model is not None
+        mx = self.mx
+        mx.synchronize()
+        tick = time.perf_counter()
+        automatic, point = self.joint_model(
+            image, mx.array(normalized_point_positions(points, tuple(image.shape[2:]))),
+            mx.array(codes), target,
+        )
+        mx.eval(automatic, point)
+        mx.synchronize()
+        host_automatic, host_point = np.array(automatic), np.array(point)
+        if not np.isfinite(host_automatic).all() or not np.isfinite(host_point).all():
+            raise ValueError("MLX interactive decoders returned non-finite logits")
+        self.metrics["patch_seconds"].append(time.perf_counter() - tick)
+        return host_automatic, host_point
 
     def point_logits(
         self,

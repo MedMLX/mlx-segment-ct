@@ -473,8 +473,8 @@ def _interactive(
         transform_points,
     )
     from mlx_segment_ct.labels import label_name
-    from mlx_segment_ct.mlx_network import AutomaticModel, required_shapes
-    from mlx_segment_ct.mlx_point import PointModel
+    from mlx_segment_ct.mlx_network import AutomaticModel
+    from mlx_segment_ct.mlx_point import PointModel, SharedPointAutomatic
     from mlx_segment_ct.restoration import ScoreRestorer
 
     tick = time.perf_counter()
@@ -488,14 +488,15 @@ def _interactive(
     previous = (
         None if previous_file is None else previous_logits(previous_file, prepared.image.shape)
     )
-    weights = _load_point_weights(mx, weights_dir)
+    weights = _load_point_weights(mx, weights_dir, include_automatic=prompt.uses_automatic)
     automatic = None
+    joint = None
     try:
         point = PointModel(weights, mx=mx)
         if prompt.uses_automatic:
             assert prompt.class_label is not None
-            auto_weights = load_weights(mx, weights_dir / AUTOMATIC_WEIGHTS, required_shapes())
-            automatic = AutomaticModel(auto_weights, (prompt.class_label,), mx=mx)
+            automatic = AutomaticModel(weights, (prompt.class_label,), mx=mx)
+            joint = SharedPointAutomatic(point, automatic)
     except RuntimeError as exc:
         raise ModelExecutionError(f"{_NETWORK_FAILURE}: {exc}") from exc
     metrics: Metrics = {"patch_seconds": []}
@@ -509,6 +510,7 @@ def _interactive(
             mx=mx,
             roi_size=roi_size,
             automatic_model=automatic,
+            joint_model=joint,
             metrics=metrics,
             previous_logits=previous,
             point_start=point_start,
@@ -910,13 +912,24 @@ def load_weights(
     return weights
 
 
-def _load_point_weights(mx: CoreRuntime, directory: Path) -> dict[str, array]:
-    """Load the shared encoder and point decoder."""
+def _load_point_weights(
+    mx: CoreRuntime, directory: Path, *, include_automatic: bool = False
+) -> dict[str, array]:
+    """Admit one encoder and the requested decoders, reading each checkpoint once."""
+    from mlx_segment_ct.mlx_network import required_shapes
     from mlx_segment_ct.mlx_point import additional_shapes, correction_shapes
 
     automatic_path = directory / AUTOMATIC_WEIGHTS
     extra_path = directory / CORRECTION_WEIGHTS
     automatic = _read_safetensors(mx, automatic_path)
+    if include_automatic:
+        shapes = required_shapes()
+        if automatic.keys() != shapes.keys():
+            raise AssetNotReadyError(
+                "NV-Segment-CT automatic.safetensors does not match the automatic graph",
+                reason="mismatched automatic.safetensors", hint=_WEIGHTS_HINT,
+            )
+        _check_tensors(mx, automatic_path, automatic, shapes)
     extra = _read_safetensors(mx, extra_path)
     additional = additional_shapes()
     if extra.keys() != additional.keys():
@@ -931,6 +944,8 @@ def _load_point_weights(mx: CoreRuntime, directory: Path) -> dict[str, array]:
     weights = {
         name: extra[name] if name in extra else automatic[name] for name in correction_shapes()
     }
+    if include_automatic:
+        weights.update(automatic)
     mx.eval(weights)
     return weights
 

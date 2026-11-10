@@ -118,6 +118,14 @@ class PointPredictor[ArrayT](Protocol):
         ...
 
 
+class JointPredictor[ArrayT](Protocol):
+    def __call__(
+        self, image: ArrayT, positions: ArrayT, codes: ArrayT, target: int
+    ) -> tuple[ArrayT, ArrayT]:
+        """Return automatic and point logits from one shared image encoder."""
+        ...
+
+
 class CoordinatePredictor[ArrayT](Protocol):
     def __call__(self, image: ArrayT, coordinates: PatchCoordinates, /) -> ArrayT:
         """Predict a window using its coordinates in the full image."""

@@ -20,6 +20,7 @@ from mlx_segment_ct import (
     required_shapes,
 )
 from mlx_segment_ct._types import ArrayValue, CoreRuntime, HostArray
+from mlx_segment_ct.mlx_point import SharedPointAutomatic
 
 if TYPE_CHECKING:
     from mlx.core import array
@@ -121,3 +122,32 @@ def test_full_model_equivalence_on_metal(kind: str, mx: CoreRuntime) -> None:
     assert_numerical(actual, data["output"])
     if kind != "feature":
         np.testing.assert_array_equal(np.asarray(actual) > 0, data["output"] > 0)
+
+
+def test_shared_encoder_preserves_both_decoder_logits(mx: CoreRuntime) -> None:
+    """Reuse one encoder while preserving recorded point scores and separate auto scores."""
+    data, weights = fixture_weights("full_point", mx)
+    auto_only = {name: shape for name, shape in required_shapes().items() if name not in weights}
+    weights.update(seeded_weights(auto_only, 402, mx))
+    point = PointModel(weights, mx=mx)
+    automatic = AutomaticModel(weights, (26,), mx=mx)
+    image = native(mx, data["image"])
+    separate_auto = automatic(image)
+    mx.eval(separate_auto)
+    auto, clicked = SharedPointAutomatic(point, automatic)(
+        image, native(mx, data["positions"]), native(mx, data["codes"]), int(data["target"])
+    )
+    mx.eval(auto, clicked)
+    np.testing.assert_array_equal(
+        cast("HostArray", np.asarray(auto)), cast("HostArray", np.asarray(separate_auto))
+    )
+    assert_numerical(clicked, data["output"])
+    np.testing.assert_array_equal(np.asarray(clicked) > 0, data["output"] > 0)
+
+    # A second allocation is not an admitted shared checkpoint, even if its values match.
+    different = dict(weights)
+    name = "image_encoder.encoder.conv_init.weight"
+    different[name] = native(mx, weights[name])
+    automatic.weights = different
+    with pytest.raises(ValueError, match="identical encoder arrays"):
+        SharedPointAutomatic(point, automatic)

@@ -30,7 +30,9 @@ from mlx_segment_ct import (
 from mlx_segment_ct._types import (
     CoreRuntime,
     HostArray,
+    JointPredictor,
     Metrics,
+    PointPredictor,
     RunArguments,
 )
 from mlx_segment_ct.bundle_transforms import load_volume, preprocess
@@ -107,6 +109,16 @@ def replay_models(
     monkeypatch.setattr(medmlx, "_load_point_weights", empty_weights)
     monkeypatch.setattr(medmlx, "load_weights", empty_weights)
     monkeypatch.setattr("mlx_segment_ct.mlx_point.PointModel", point)
+    def joint(
+        point: PointPredictor[HostArray], automatic: Callable[[HostArray], HostArray]
+    ) -> JointPredictor[HostArray]:
+        """Replay both captured native decoder boundaries on their original inputs."""
+        def predict(
+            image: HostArray, positions: HostArray, codes: HostArray, target: int
+        ) -> tuple[HostArray, HostArray]:
+            return automatic(image), point(image, positions, codes, target)
+        return predict
+    monkeypatch.setattr("mlx_segment_ct.mlx_point.SharedPointAutomatic", joint)
     if automatic is not None:
         monkeypatch.setattr("mlx_segment_ct.mlx_network.AutomaticModel", automatic)
 

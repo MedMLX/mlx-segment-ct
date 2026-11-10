@@ -9,7 +9,7 @@ from mlx_segment_ct._types import CoreRuntime
 if TYPE_CHECKING:
     from mlx.core import array
 
-from mlx_segment_ct.mlx_network import FEATURES, FeatureModel, required_shapes
+from mlx_segment_ct.mlx_network import FEATURES, AutomaticModel, FeatureModel, required_shapes
 from mlx_segment_ct.mlx_upsample import AutomaticUpsample
 
 
@@ -172,6 +172,34 @@ class PointModel(FeatureModel):
         up = up + self.weights["point_head.output_upscaling.0.bias"][None, :, None, None, None]
         up = self.conv(self.gelu(self.norm(up, None)), "point_head.output_upscaling.3")
         return mx.reshape(hyper @ mx.reshape(up, (1, FEATURES, -1)), (1, 1, *up.shape[2:]))
+
+
+class SharedPointAutomatic:
+    """Run automatic and point decoders from one admitted, identical encoder bundle."""
+
+    def __init__(self, point: PointModel, automatic: AutomaticModel) -> None:
+        """Require shared native encoder array identities before reusing any features."""
+        for name in required_shapes():
+            if (
+                name.startswith("image_encoder.encoder.")
+                and point.weights[name] is not automatic.weights[name]
+            ):
+                raise ValueError("Joint VISTA3D prediction requires identical encoder arrays")
+        self.point, self.automatic = point, automatic
+
+    def __call__(
+        self, image: array, positions: array, codes: array, target: int
+    ) -> tuple[array, array]:
+        """Return automatic/point logits, retaining skips only for this window."""
+        pyramid = self.point.trunk(image)
+        automatic = self.automatic.class_logits(self.automatic.decode_features(pyramid))
+        # Complete the automatic branch before constructing the point decoder,
+        # preserving stage order and releasing its intermediate activations.
+        self.point.mx.eval(automatic)
+        features = self.point.decode_features(pyramid)
+        del pyramid
+        point = self.point.decode(features, positions, codes, target)
+        return automatic, point
 
 
 def correction_shapes() -> dict[str, tuple[int, ...]]:

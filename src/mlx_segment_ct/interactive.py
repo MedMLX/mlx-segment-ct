@@ -16,6 +16,7 @@ from mlx_segment_ct._types import (
     ArrayValue,
     HostArray,
     IntArray,
+    JointPredictor,
     Metrics,
     PointPredictor,
 )
@@ -55,6 +56,7 @@ def interactive_logits[ArrayT: ArrayValue](
     mx: ArrayBoundary[ArrayT],
     roi_size: Sequence[int],
     automatic_model: Callable[[ArrayT], ArrayT] | None = None,
+    joint_model: JointPredictor[ArrayT] | None = None,
     metrics: Metrics | None = None,
     previous_logits: HostArray | None = None,
     point_start: int = 0,
@@ -76,6 +78,7 @@ def interactive_logits[ArrayT: ArrayValue](
         roi_size: three positive window sizes; the bundle uses 128^3, or
             192x192x128 for NV-Segment-CTMR.
         automatic_model: required exactly when ``prompt.uses_automatic``.
+        joint_model: optional shared-encoder callback for windows using both branches.
         metrics: receives per-window seconds in ``patch_seconds``.
         previous_logits: raw logits from an earlier call, same shape as ``image``.
         point_start: index of the first new click; earlier clicks stay as context.
@@ -104,6 +107,8 @@ def interactive_logits[ArrayT: ArrayValue](
     ):
         raise InvalidInputError("Previous logits must match the FP32 preprocessed image grid")
     use_automatic = prompt.uses_automatic
+    if joint_model is not None and not use_automatic:
+        raise InvalidInputError("A joint model requires the automatic branch")
     if use_automatic != (automatic_model is not None):
         raise InvalidInputError(
             "Provide an automatic model exactly when the bundle enables the automatic branch"
@@ -111,7 +116,8 @@ def interactive_logits[ArrayT: ArrayValue](
     metrics = {"patch_seconds": []} if metrics is None else metrics
     target = None if prompt.class_label is None else np.array([prompt.class_label])
     predictor = PointWindowPredictor(
-        point_model, automatic_model=automatic_model, mx=mx, metrics=metrics
+        point_model, automatic_model=automatic_model, joint_model=joint_model,
+        mx=mx, metrics=metrics,
     )
     # transpose, mode, overlap, with_coord and sw_batch_size mirror the bundle's inferer
     # call. The point inferer forwards them to PointWindowPredictor, which requires

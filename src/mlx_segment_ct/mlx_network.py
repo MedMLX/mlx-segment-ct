@@ -65,6 +65,10 @@ class FeatureModel:
 
     def encode(self, image: array) -> array:
         """Run encoder and selected decoder; returns ``(1, 48, D, H, W)`` features."""
+        return self.decode_features(self.trunk(image))
+
+    def trunk(self, image: array) -> tuple[array, ...]:
+        """Return four encoder skips and its deepest feature map in source axis order."""
         self.validate_image(image)
         x = self.conv(image, "image_encoder.encoder.conv_init")
         skips: list[array] = []
@@ -77,6 +81,15 @@ class FeatureModel:
             if stage < 4:
                 skips.append(x)
                 x = self.conv(x, f"{prefix}.downsample", stride=2)
+        return (*skips, x)
+
+    def decode_features(self, pyramid: tuple[array, ...]) -> array:
+        """Decode a shared trunk pyramid using this model's own upsampling branch."""
+        x = pyramid[-1]
+        skips = list(pyramid[:-1])
+        # Standalone calls can release consumed skips; joint inference retains
+        # its own pyramid only until the second branch has consumed it.
+        del pyramid
         for stage in range(4):
             prefix = f"image_encoder.{self.branch}.{stage}"
             x = self.upsamples[stage](x)
@@ -172,14 +185,17 @@ class AutomaticModel(FeatureModel):
         embedding table. Returns raw (pre-sigmoid) logits ``(1, len(class_ids), D, H, W)``,
         one channel per class in prompt order.
         """
-        self.validate_image(image)
         features = self.encode(image)
+        return self.class_logits(features, class_ids)
+
+    def class_logits(self, features: array, class_ids: Sequence[int] | None = None) -> array:
+        """Apply the automatic class head to decoded features on their native spatial grid."""
         for index in range(2):
             features = self.image_mapping(features, f"class_head.image_post_mapping.{index}.layer")
             self.mx.async_eval(features)
         embedding = self.embedding if class_ids is None else self.embed_classes(class_ids)
         logits = embedding @ self.mx.reshape(features, (1, FEATURES, -1))
-        return self.mx.reshape(logits, (1, embedding.shape[0], *image.shape[2:]))
+        return self.mx.reshape(logits, (1, embedding.shape[0], *features.shape[2:]))
 
 
 def required_shapes() -> dict[str, tuple[int, ...]]:
