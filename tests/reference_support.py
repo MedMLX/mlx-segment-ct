@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -39,6 +40,46 @@ def load_fixture(name: str) -> tuple[NumericFixtures, FixtureMetadata]:
         )
     with np.load(path, allow_pickle=False) as archive:
         arrays = cast("NumericFixtures", dict(archive))
+    if name in {
+        "medmlx_ctmr",
+        "medmlx_geometry",
+        "medmlx_segment",
+        "medmlx_ctmr_segment",
+        "interactive_runner",
+        "interactive_ctmr_runner",
+        "interactive_correction_runner",
+        "interactive_windows",
+        "window_constant",
+        "window_padded",
+        "window_gaussian",
+        "point_window_overlap",
+        "point_window_padded",
+        "point_window_multi",
+        "full_feature",
+        "full_automatic",
+        "full_point",
+        "full_window_constant",
+        "full_point_window_overlap",
+        "automatic_subset",
+        "point_target_1",
+        "point_target_25",
+        "point_target_26",
+        "point_target_117",
+        "point_target_254",
+        "point_previous",
+    }:
+        root = Path(
+            os.environ.get(
+                "MEDMLX_TEST_REFERENCES",
+                str(Path(__file__).resolve().parents[1] / "work/real-reference"),
+            )
+        )
+        with np.load(root / f"{name}.npz", allow_pickle=False) as archive:
+            arrays.update(cast("NumericFixtures", dict(archive)))
+        real_info = cast("FixtureMetadata", json.loads(str(arrays.pop("real_metadata"))))
+        assert real_info["monai_version"] == "1.6.0"
+        assert real_info["bundle_revision"] == "f9f5f51b589e5dc9c23c453cf5138398e4084056"
+        assert real_info["reference_backend"] == REFERENCE_KEY
     info = cast("FixtureMetadata", json.loads(str(arrays.pop("metadata"))))
     assert info["schema_version"] == 1
     assert info["monai_version"] == "1.6.0"
@@ -146,9 +187,12 @@ def dense_restoration(
     weight = ndimage.map_coordinates(finite.astype(np.float64), position, order=1, mode="nearest")
     filled = np.where(finite, scores, 0).astype(np.float64)
     with np.errstate(divide="ignore", invalid="ignore"):
-        values = np.stack(
-            [ndimage.map_coordinates(c, position, order=1, mode="nearest") for c in filled]
-        ) / weight
+        values = (
+            np.stack(
+                [ndimage.map_coordinates(c, position, order=1, mode="nearest") for c in filled]
+            )
+            / weight
+        )
     clipped = tuple(np.clip(nearest[axis], 0, size[axis, 0] - 1) for axis in range(3))
     covered = finite[clipped]
     ids = np.asarray(class_ids, dtype=np.float32)

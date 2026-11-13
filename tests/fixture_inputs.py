@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from oracle_types import HostArray, OracleNiftiRuntime
+    from oracle_types import HostArray
 
     from mlx_segment_ct._types import (
         ArrayValue,
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
         StandInRuntime,
     )
 
-import nibabel as nib
 import numpy as np
 
 
@@ -115,32 +114,3 @@ class AutomaticModelStand[ArrayT: ArrayValue, DtypeT: Float32Dtype]:
         return cast(
             "ArrayT", image * self.scale + mx.array(ramp)[None, None] * self.slope + self.bias
         )
-
-
-def nifti_bytes(data: HostArray, affine: HostArray, form: str) -> HostArray:
-    """Serialize an image and affine as a NIfTI byte stream."""
-    image = cast("OracleNiftiRuntime", nib).Nifti1Image(data, affine)
-    if form == "qform":
-        image.set_sform(None, code=0)
-        image.set_qform(affine, code=1)
-    elif form == "zooms":
-        image.header.set_zooms(tuple(float(v) * 1.1 for v in np.abs(np.diag(affine)[:3])))
-    else:
-        image.set_qform(affine, code=1)
-        image.set_sform(affine, code=1)
-    return np.frombuffer(image.to_bytes(), dtype=np.uint8)
-
-
-def large_percentile_input() -> HostArray:
-    """A float32 tensor above MONAI's np.percentile threshold, with many tied values."""
-    i, j, k = np.indices((104, 100, 97), dtype=np.int64)
-    return ((i * 7 + j * 13 + k * 29) % 1009 - 200).astype(np.float32)[None]
-
-
-def large_mr() -> HostArray:
-    """A 1.5 mm volume whose foreground crop exceeds MONAI's np.percentile threshold."""
-    i, j, k = np.indices((112, 104, 96), dtype=np.int64)
-    data = (i * 3 + j * 5 + k * 7) % 500 + 1
-    data[:2] = 0
-    data[:, -2:] = 0
-    return data.astype(np.int16)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast
@@ -10,7 +11,7 @@ from typing import TYPE_CHECKING, NoReturn, cast
 import nibabel as nib
 import numpy as np
 import pytest
-from fixture_inputs import AutomaticModelStand, large_mr, large_percentile_input, nifti_bytes
+from fixture_inputs import AutomaticModelStand
 from medmlx_core.errors import AssetNotReadyError, InvalidInputError
 from reference_support import (
     HostArrays,
@@ -189,7 +190,7 @@ def test_ctmr_percentile_scaling_matches_monai(name: str) -> None:
     data, _ = load_fixture("medmlx_ctmr")
     if name == "large":
         # Above one million voxels MONAI's percentile switches to np.percentile.
-        scaled = scale_intensity_percentiles(large_percentile_input())
+        scaled = scale_intensity_percentiles(data["percentile::large::input"])
         assert list(scaled.shape) == data["percentile::large::shape"].tolist()
         assert np.array_equal(scaled, data["percentile::large::output"])
         return
@@ -203,12 +204,8 @@ def test_ctmr_percentile_scaling_matches_monai(name: str) -> None:
 def test_ctmr_preprocessing_matches_upstream(name: str, tmp_path: Path) -> None:
     """Compare CTMR preprocessing with source recordings."""
     data, _ = load_fixture("medmlx_ctmr")
-    raw = (
-        nifti_bytes(large_mr(), np.diag([1.5, 1.5, 1.5, 1.0]), "both")
-        if name == "large"
-        else data[f"{name}::nifti"]
-    )
-    volume, affine = load_volume(write_nifti(tmp_path / "mr.nii.gz", raw))
+    raw = data[f"{name}::nifti"]
+    volume, affine = load_volume(write_nifti(tmp_path / "ct.nii.gz", raw))
     prepared = preprocess(volume, affine, intensity="percentiles")
     assert prepared.image.dtype == np.float32
     if name == "large":
@@ -325,10 +322,16 @@ def test_run_ctmr_matches_upstream_worker(
 
 
 def ct_volume(shape: tuple[int, ...] = (24, 20, 12)) -> HostArray:
-    """Create a synthetic CT volume with foreground."""
-    data = np.full(shape, -1000, dtype=np.int16)
-    data[4:-4, 4:-4, 2:-2] = 60
-    return data
+    """Crop the HCC-TACE-Seg contrast CT for runner tests."""
+    source = os.environ.get(
+        "MEDMLX_TEST_CT", str(Path.home() / ".cache/medmlx/test-data/hcc_063_ct.nii.gz")
+    )
+    image = load_nifti(source)
+    data = np.asarray(image.dataobj, dtype=np.float32)
+    crop = data[200 : 200 + shape[0], 200 : 200 + shape[1], 40 : 40 + shape[2]]
+    if crop.shape != shape:
+        raise ValueError(f"CT crop {crop.shape} does not match requested shape {shape}")
+    return crop
 
 
 REJECTIONS = {
