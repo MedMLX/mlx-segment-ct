@@ -13,7 +13,7 @@ from os import PathLike
 from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, Required, TypedDict
 
 import numpy as np
-from medmlx_core.outputs import Artifact
+from medmlx_core.outputs import RunResult as _RunResult
 from medmlx_core.typing import MlxRuntime
 from numpy.typing import DTypeLike, NDArray
 
@@ -251,10 +251,7 @@ class Outputs(TypedDict):
     mask: str
 
 
-class RunResult(TypedDict):
-    outputs: Outputs
-    artifacts: dict[str, Artifact]
-    details: PublishedDetails
+type RunResult = _RunResult[PublishedDetails, Outputs]
 
 
 class RunArguments(TypedDict, total=False):
