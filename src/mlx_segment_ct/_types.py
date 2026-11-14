@@ -13,11 +13,16 @@ from os import PathLike
 from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, Required, TypedDict
 
 import numpy as np
+from medmlx_core.outputs import Artifact
 from medmlx_core.typing import MlxRuntime
 from numpy.typing import DTypeLike, NDArray
 
 if TYPE_CHECKING:
     from mlx.core import Dtype, array
+
+type Checkpoint = Literal["NV-Segment-CT", "NV-Segment-CTMR"]
+type Modality = Literal["CT_BODY", "MRI_BODY", "MRI_BRAIN"]
+type Restoration = Literal["scores", "bundle"]
 
 type NumericScalar = (
     np.bool_
@@ -247,6 +252,7 @@ class Outputs(TypedDict):
 
 class RunResult(TypedDict):
     outputs: Outputs
+    artifacts: dict[str, Artifact]
     details: PublishedDetails
 
 
@@ -263,9 +269,9 @@ class RunArguments(TypedDict, total=False):
     point_start: int
     interactive: bool
     overwrite: bool
-    checkpoint: str
-    modality: str | None
-    restoration: str
+    checkpoint: Checkpoint
+    modality: Modality | None
+    restoration: Restoration
 
 
 class NiftiHeader(Protocol):

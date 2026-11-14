@@ -85,8 +85,9 @@ for CTMR.
   (assumed millimetres); files marked in metres or microns are rejected.
 - **Mask:** float32 global labels with the source shape and affine, in a new NIfTI
   header. Voxels no window covered are 255.
-- **Return value:** `{"outputs": {"mask": path}, "details": {...}}`, with run metadata in
-  `details`.
+- **Return value:** `{"outputs": {"mask": path}, "artifacts": {"mask": ...}, "details": {...}}`.
+  The mask artifact is a label map on the input grid whose labels are the classes the request
+  can write; `details` holds run metadata.
 - **Errors:** invalid requests, missing weights and inference failures raise
   `medmlx-core` errors.
 

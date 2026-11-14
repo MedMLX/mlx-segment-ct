@@ -28,6 +28,7 @@ from mlx_segment_ct import (
     transform_points,
 )
 from mlx_segment_ct._types import (
+    Checkpoint,
     CoreRuntime,
     HostArray,
     JointPredictor,
@@ -231,7 +232,7 @@ def test_runner_matches_bundle_nifti_geometry_and_labels(
         points=data["source_points"][0].tolist(),
         point_labels=data["codes"][0].tolist(),
         label_prompt=None if info["target"] is None else [info["target"]],
-        checkpoint=checkpoint,
+        checkpoint=cast(Checkpoint, checkpoint),
         restoration="bundle",
     )
     result = medmlx.run(**kwargs)

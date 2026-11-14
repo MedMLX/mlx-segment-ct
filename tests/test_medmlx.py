@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 from fixture_inputs import AutomaticModelStand
 from medmlx_core.errors import AssetNotReadyError, InvalidInputError
+from medmlx_core.outputs import validate_outputs
 from reference_support import (
     HostArrays,
     assert_restored,
@@ -294,6 +295,11 @@ def test_run_segmentation_matches_upstream_worker(
         restoration="bundle",
     )
     assert_saved(Path(result["outputs"]["mask"]), data, f"{name}::mask")
+    labels = validate_outputs(result).artifacts["mask"].get("labels")
+    assert labels is not None and labels[0] == {"value": 0, "name": "background"}
+    class_ids = result["details"].get("class_ids")
+    assert class_ids is not None
+    assert {item["value"] for item in labels} == {0, *class_ids}
 
 
 @pytest.mark.parametrize("name", ["lps", "oblique", "sagittal"])
@@ -427,7 +433,14 @@ def test_run_full_networks_end_to_end_on_metal(
         result = cast("RawRunner", runner)(
             image_path=source, weights_path=weights, output_dir=tmp_path / f"out{index}", **request
         )
-        saved = load_nifti(result["outputs"]["mask"])
+        paths, artifacts = validate_outputs(result)
+        mask = artifacts["mask"]
+        assert (mask["kind"], mask.get("grid_of")) == ("label_map", "image_path")
+        mask_labels = mask.get("labels")
+        assert mask_labels is not None
+        assert {item["value"] for item in mask_labels} == labels
+        assert all(item["name"] for item in mask_labels)
+        saved = load_nifti(paths["mask"])
         assert saved.shape == (40, 36, 16)
         assert np.allclose(saved.affine, affine, rtol=0, atol=1e-5)
         assert saved.get_data_dtype() == np.float32

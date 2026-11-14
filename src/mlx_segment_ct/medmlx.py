@@ -18,12 +18,15 @@ from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, cast, overload
 
 from mlx_segment_ct._types import (
+    Checkpoint,
     CoreRuntime,
     Details,
     HostArray,
     Metrics,
+    Modality,
     PatchCoordinates,
     PublishedDetails,
+    Restoration,
     RollingMetrics,
     RunResult,
 )
@@ -33,6 +36,7 @@ if TYPE_CHECKING:
 
 import numpy as np
 from medmlx_core.errors import AssetNotReadyError, InvalidInputError, ModelExecutionError
+from medmlx_core.outputs import artifact
 from medmlx_core.weights import weights_dir as model_weights_dir
 from medmlx_core.weights import weights_revision
 
@@ -102,9 +106,9 @@ def run(
     point_start: int = 0,
     interactive: bool = False,
     overwrite: bool = False,
-    checkpoint: str = "NV-Segment-CT",
-    modality: str | None = None,
-    restoration: str = "scores",
+    checkpoint: Checkpoint = "NV-Segment-CT",
+    modality: Modality | None = None,
+    restoration: Restoration = "scores",
 ) -> RunResult:
     """Segment a CT or MRI NIfTI with automatic classes or one object's point prompts.
 
@@ -138,8 +142,13 @@ def run(
     and ``correction.safetensors`` for ``checkpoint="NV-Segment-CT"``. The
     matching CTMR bundle is ``MedMLX/vista3d-ctmr-mlx``; NVIDIA does not support
     interactive point segmentation with that checkpoint.
-    The result contains absolute output paths and JSON details. Masks preserve the
-    source spatial shape and affine, with float32 global labels and 255 for uncovered voxels.
+    The result holds absolute output paths, an ``artifacts`` description of the mask and
+    JSON details. Masks preserve the source spatial shape and affine, with float32 global
+    labels and 255 for uncovered voxels. The mask artifact is a ``label_map`` in
+    ``image_physical`` space on ``image_path``'s grid; its labels are the classes this
+    request can write: background plus the selected classes (with coarse prompts expanded
+    to their subclasses), or background, the clicked object and 255 "uncovered" for point
+    prompts. ``run_ctmr`` returns the same structure.
     Existing outputs require ``overwrite=True``. Invalid requests, missing weights
     and inference failures raise the corresponding medmlx-core error.
 
@@ -203,9 +212,9 @@ def _run(
     point_start: int,
     interactive: bool,
     overwrite: bool,
-    checkpoint: str,
-    modality: str | None,
-    restoration: str,
+    checkpoint: Checkpoint,
+    modality: Modality | None,
+    restoration: Restoration,
     automatic: str | None,
 ) -> RunResult:
     """Check every argument, then resolve weights and run; see ``run`` for the contract.
@@ -305,8 +314,8 @@ def run_ctmr(
     point_start: int = 0,
     interactive: bool = False,
     overwrite: bool = False,
-    modality: str | None = None,
-    restoration: str = "scores",
+    modality: Modality | None = None,
+    restoration: Restoration = "scores",
 ) -> RunResult:
     """Run the CTMR variant with its own automatic model folder and fixed settings.
 
@@ -414,6 +423,22 @@ def _infer_and_publish(
     )
     return {
         "outputs": {"mask": destination.as_posix()},
+        "artifacts": {
+            "mask": artifact(
+                kind="label_map",
+                coordinate_space="image_physical",
+                grid_of="image_path",
+                # Zero-shot CTMR point classes (IDs above the 345-label vocabulary) have no
+                # bundle name; the artifact says so rather than leaving the name empty.
+                labels=[
+                    {
+                        "value": item["value"],
+                        "name": item["name"] or f"unnamed label {item['value']}",
+                    }
+                    for item in details["output_labels"]
+                ],
+            )
+        },
         "details": cast("PublishedDetails", details),
     }
 
