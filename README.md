@@ -37,12 +37,15 @@ uv pip install "mlx-segment-ct>=0.3.6"
 ## Run
 
 ```python
-from mlx_segment_ct.medmlx import run
+from mlx_segment_ct import segment
 
-run(image_path="ct.nii.gz", output_dir="all")
-run(image_path="ct.nii.gz", output_dir="organs", prompt="liver, spleen")
-run(
-    image_path="ct.nii.gz", output_dir="points",
+segment(model="mlx-segment-ct", image_path="ct.nii.gz", output_dir="all")
+segment(
+    model="mlx-segment-ct", image_path="ct.nii.gz", output_dir="organs",
+    classes="liver, spleen",
+)
+segment(
+    model="mlx-segment-ct", image_path="ct.nii.gz", output_dir="points",
     points=[[40, 50, 30], [44, 51, 30]], point_labels=[1, 0],
 )
 ```
@@ -52,31 +55,30 @@ preprocessed foreground crop. `1` includes a point; `0` excludes it.
 
 ### Models and weights
 
-| Model | Entry point | Weights | Notes |
-| :--- | :--- | :--- | :--- |
-| `mlx-segment-ct` | `mlx_segment_ct.medmlx.run` | [`MedMLX/vista3d-ct-mlx`](https://huggingface.co/MedMLX/vista3d-ct-mlx) | Automatic, named and point segmentation of CT |
-| `mlx-segment-ctmr` | `mlx_segment_ct.medmlx.run_ctmr` | [`MedMLX/vista3d-ctmr-mlx`](https://huggingface.co/MedMLX/vista3d-ctmr-mlx) | CT and MRI under noncommercial terms; NVIDIA does not support point segmentation with this checkpoint |
+| Model | Weights | Notes |
+| :--- | :--- | :--- |
+| `mlx-segment-ct` | [`MedMLX/vista3d-ct-mlx`](https://huggingface.co/MedMLX/vista3d-ct-mlx) | Automatic, named and point segmentation of CT |
+| `mlx-segment-ctmr` | [`MedMLX/vista3d-ctmr-mlx`](https://huggingface.co/MedMLX/vista3d-ctmr-mlx) | CT and MRI under noncommercial terms; NVIDIA does not support point segmentation with this checkpoint |
 
 Omitting `weights_path` downloads the model's weights into the shared MedMLX cache on
 first use; with MedMLX installed, `medmlx setup <model>` downloads them ahead of time.
 A local weights folder holds `automatic.safetensors` and `correction.safetensors`.
-`run_ctmr` selects the CTMR preprocessing and labels itself. `run(checkpoint="NV-Segment-CTMR", ...)`
-also accepts an explicitly supplied matching folder, and never substitutes CT weights
-for CTMR.
+`model` selects the checkpoint's preprocessing, labels and weights; a supplied
+`weights_path` must hold that model's files.
 
 ### Inputs and outputs
 
 | Argument | Meaning |
 | --- | --- |
+| `model` | `"mlx-segment-ct"` or `"mlx-segment-ctmr"` |
 | `image_path` | One CT in NIfTI (`.nii` or `.nii.gz`); CT or MRI with NV-Segment-CTMR |
-| `output_dir` | Directory for `mlx_segment_ct_mask.nii.gz` |
+| `output_dir` | Directory for `mask.nii.gz` |
 | `weights_path` | Optional folder with `automatic.safetensors`, plus `correction.safetensors` for points |
-| `prompt`, `label_prompt` | Classes by canonical name (list or comma-separated string, case insensitive) or by numeric ID |
+| `classes` | Class names (list or comma-separated string, case insensitive) or numeric IDs |
 | `segment_all` | Every class of the checkpoint; also the default without prompts |
 | `points`, `point_labels` | Clicks as `(x, y, z)` source voxels, with one code each |
 | `previous_logits_path`, `point_start` | Correct an earlier point result (see below) |
 | `interactive` | Require point mode; clicks select it anyway |
-| `checkpoint` | `"NV-Segment-CT"` (default) or `"NV-Segment-CTMR"`, matching the weights |
 | `modality` | CTMR all-classes set without prompts: `"MRI_BODY"` (default), `"CT_BODY"` or `"MRI_BRAIN"` |
 | `restoration` | `"scores"` (default) or `"bundle"` (see below) |
 | `overwrite` | `False` by default; an existing mask is never replaced |
@@ -135,8 +137,8 @@ point branch. A class prompt whose clicks are all padding keeps the automatic br
 A correction passes the previous raw logits, before sigmoid or postprocessing:
 
 ```python
-run(
-    image_path="ct.nii.gz", output_dir="corrected", label_prompt=[26],
+segment(
+    model="mlx-segment-ct", image_path="ct.nii.gz", output_dir="corrected", classes=[26],
     previous_logits_path="previous.npy",
     points=[[40, 50, 30], [44, 51, 30]], point_labels=[1, 0], point_start=1,
 )

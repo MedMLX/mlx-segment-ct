@@ -28,11 +28,11 @@ from mlx_segment_ct import (
     transform_points,
 )
 from mlx_segment_ct._types import (
-    Checkpoint,
     CoreRuntime,
     HostArray,
     JointPredictor,
     Metrics,
+    ModelId,
     PointPredictor,
     RunArguments,
 )
@@ -195,17 +195,18 @@ def test_component_postprocessing_matches_monai_including_mean_fill(name: str) -
 
 
 @pytest.mark.parametrize(
-    ("checkpoint", "name"),
+    ("model", "name"),
     [
-        *(("NV-Segment-CT", name) for name in ("ras_ties", "lps", "oblique")),
+        *(("mlx-segment-ct", name) for name in ("ras_ties", "lps", "oblique")),
         # NV-Segment-CTMR: percentile-scaled MR, a non-cubic window and target 300.
-        *(("NV-Segment-CTMR", name) for name in ("ras_ties", "lps", "oblique")),
+        *(("mlx-segment-ctmr", name) for name in ("ras_ties", "lps", "oblique")),
     ],
 )
 def test_runner_matches_bundle_nifti_geometry_and_labels(
-    checkpoint: str, name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    model: ModelId, name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Compare runner output geometry and labels with the bundle recording."""
+    checkpoint = medmlx.CHECKPOINTS[model]
     ctmr = checkpoint == "NV-Segment-CTMR"
     data, info = fixture("ctmr_runner" if ctmr else "runner", name)
     source = tmp_path / "ct.nii"
@@ -225,17 +226,17 @@ def test_runner_matches_bundle_nifti_geometry_and_labels(
     replay_models(monkeypatch, lambda *a, **k: point, lambda *a, **k: auto)
     monkeypatch.setattr(medmlx, "CTMR_ROI_SIZE" if ctmr else "ROI_SIZE", tuple(info["roi"]))
     kwargs = RunArguments(
+        model=model,
         image_path=source,
         weights_path=touch_weights(tmp_path / "weights"),
         output_dir=tmp_path / "out",
         interactive=True,
         points=data["source_points"][0].tolist(),
         point_labels=data["codes"][0].tolist(),
-        label_prompt=None if info["target"] is None else [info["target"]],
-        checkpoint=cast(Checkpoint, checkpoint),
+        classes=None if info["target"] is None else [info["target"]],
         restoration="bundle",
     )
-    result = medmlx.run(**kwargs)
+    result = medmlx.segment(**kwargs)
     saved = load_nifti(result["outputs"]["mask"])
     assert np.array_equal(np.asanyarray(saved.dataobj), data["mask"])
     assert np.array_equal(saved.affine, data["mask_affine"])
@@ -244,7 +245,7 @@ def test_runner_matches_bundle_nifti_geometry_and_labels(
     # By default the post-processed scores are restored at source resolution.
     point.calls = auto.calls = 0
     kwargs["restoration"], kwargs["overwrite"] = "scores", True
-    scored = medmlx.run(**kwargs)
+    scored = medmlx.segment(**kwargs)
     field = interactive_scores(data["logits"], transformed)
     labels, interior, margin = dense_restoration(
         field, prepared.affine, affine, volume.shape[1:], [original.output_label]
@@ -294,14 +295,15 @@ def test_previous_logits_runner_matches_upstream(
     model, auto = RecordedPoint(data), RecordedAutomatic(data)
     replay_models(monkeypatch, lambda *a, **k: model, lambda *a, **k: auto)
     monkeypatch.setattr(medmlx, "ROI_SIZE", tuple(info["roi"]))
-    result = medmlx.run(
+    result = medmlx.segment(
+        model="mlx-segment-ct",
         image_path=source,
         weights_path=touch_weights(tmp_path),
         output_dir=tmp_path / "out",
         previous_logits_path=previous,
         points=data["source_points"][0].tolist(),
         point_labels=data["codes"][0].tolist(),
-        label_prompt=[cast("int", info["target"])],
+        classes=[cast("int", info["target"])],
         point_start=info["point_start"],
         restoration="bundle",
     )

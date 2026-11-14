@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast
 
+import medmlx_core.weights as core_weights
 import nibabel as nib
 import numpy as np
 import pytest
@@ -66,7 +67,6 @@ if TYPE_CHECKING:
         SegmentMetadata,
     )
 
-CTMR = "NV-Segment-CTMR"
 GEOMETRIES = (
     "ras_ties",
     "lps",
@@ -280,18 +280,19 @@ def test_score_restoration_interpolates_scores_at_source_voxels(name: str, tmp_p
 
 
 @pytest.mark.parametrize("name", ["ras_ties", "sagittal", "oblique", "long"])
-def test_run_segmentation_matches_upstream_worker(
+def test_segment_matches_upstream_worker(
     name: str, tmp_path: Path, weights_dir: Path, stand_ins: None
 ) -> None:
     """Compare automatic runner output with the source worker recording."""
     data, info = load_fixture("medmlx_segment")
     case = cast("SegmentMetadata", cast("CasesMetadata", info)["cases"][name])
     source = write_nifti(tmp_path / f"{name}.nii.gz", data[f"{name}::nifti"])
-    result = medmlx.run(
+    result = medmlx.segment(
+        model="mlx-segment-ct",
         image_path=str(source),
         weights_path=str(weights_dir),
         output_dir=str(tmp_path / "out"),
-        label_prompt=case["label_prompt"],
+        classes=case["label_prompt"],
         restoration="bundle",
     )
     assert_saved(Path(result["outputs"]["mask"]), data, f"{name}::mask")
@@ -303,7 +304,7 @@ def test_run_segmentation_matches_upstream_worker(
 
 
 @pytest.mark.parametrize("name", ["lps", "oblique", "sagittal"])
-def test_run_ctmr_matches_upstream_worker(
+def test_segment_ctmr_matches_upstream_worker(
     name: str,
     tmp_path: Path,
     weights_dir: Path,
@@ -316,12 +317,12 @@ def test_run_ctmr_matches_upstream_worker(
     # The sagittal case runs MRI_BODY's 50 classes in a smaller window.
     monkeypatch.setattr(medmlx, "CTMR_ROI_SIZE", tuple(case["roi"]))
     source = write_nifti(tmp_path / f"{name}.nii.gz", data[f"{name}::nifti"])
-    result = medmlx.run(
+    result = medmlx.segment(
+        model="mlx-segment-ctmr",
         image_path=str(source),
         weights_path=str(weights_dir),
         output_dir=str(tmp_path / "out"),
-        label_prompt=case["label_prompt"],
-        checkpoint=CTMR,
+        classes=case["label_prompt"],
         restoration="bundle",
     )
     assert_saved(Path(result["outputs"]["mask"]), data, f"{name}::mask")
@@ -342,38 +343,36 @@ def ct_volume(shape: tuple[int, ...] = (24, 20, 12)) -> HostArray:
 
 REJECTIONS = {
     "bad-suffix": {"image_path": "not_nifti"},
-    "out-of-range": {"label_prompt": [512]},
+    "out-of-range": {"classes": [512]},
     "non-boolean": {"overwrite": "yes"},
     "existing-output": {"output_dir": "existing"},
-    "before-download": {"weights_path": None, "label_prompt": [512]},
+    "before-download": {"weights_path": None, "classes": [512]},
 }
 
 
 @pytest.mark.parametrize(
-    ("runner", "change"),
+    ("model", "change"),
     [
-        pytest.param(runner, change, id=f"{runner.__name__}-{name}")
-        for runner in (medmlx.run, medmlx.run_ctmr)
+        pytest.param(model, change, id=f"{model}-{name}")
+        for model in medmlx.CHECKPOINTS
         for name, change in REJECTIONS.items()
     ],
 )
-def test_run_rejects_invalid_inputs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runner: Callable[..., object],
-    change: dict[str, object],
+def test_segment_rejects_invalid_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str, change: dict[str, object]
 ) -> None:
     """Reject each category of malformed input before weights download or load."""
 
-    def download(model_id: str) -> NoReturn:
+    def download(model_id: str, **options: object) -> NoReturn:
         raise AssertionError("arguments must be checked before any weight download")
 
-    monkeypatch.setattr(medmlx, "model_weights_dir", download)
+    monkeypatch.setattr(core_weights, "weights_dir", download)
     image = save_volume(tmp_path / "ct.nii.gz", ct_volume(), np.eye(4))
     (tmp_path / "not_nifti").write_bytes(b"not nifti")
     (tmp_path / "existing").mkdir()
     (tmp_path / "existing" / medmlx.MASK_FILENAME).write_bytes(b"existing")
     kwargs: dict[str, object] = {
+        "model": model,
         "image_path": image,
         "weights_path": tmp_path / "no-weights",
         "output_dir": tmp_path / "out",
@@ -383,7 +382,7 @@ def test_run_rejects_invalid_inputs(
             value = tmp_path / value
         kwargs[key] = value
     with pytest.raises(InvalidInputError):
-        cast("RawRunner", runner)(**kwargs)
+        cast("RawRunner", medmlx.segment)(**kwargs)
 
 
 def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: CoreRuntime) -> None:
@@ -407,7 +406,7 @@ def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: Core
         medmlx.load_weights(mx, weights, {})
 
 
-def test_run_full_networks_end_to_end_on_metal(
+def test_segment_full_networks_end_to_end_on_metal(
     tmp_path: Path, mx: CoreRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Run both registered runners through the full native networks on Metal."""
@@ -422,15 +421,16 @@ def test_run_full_networks_end_to_end_on_metal(
     monkeypatch.setattr(medmlx, "CTMR_ROI_SIZE", (32, 32, 32))
     affine = np.diag([0.9, 0.9, 2.5, 1.0])
     source = save_volume(tmp_path / "ct.nii.gz", ct_volume((40, 36, 16)), affine)
-    interactive = {"label_prompt": [1], "points": [[20, 18, 8]], "point_labels": [1]}
-    for index, (runner, request, labels) in enumerate(
+    interactive = {"classes": [1], "points": [[20, 18, 8]], "point_labels": [1]}
+    for index, (model, request, labels) in enumerate(
         (
-            (medmlx.run, {"label_prompt": [3, 1]}, {0, 1, 3}),
-            (medmlx.run, interactive, {0, 1, 255}),
-            (medmlx.run_ctmr, {"label_prompt": [300, 3]}, {0, 3, 300}),
+            ("mlx-segment-ct", {"classes": [3, 1]}, {0, 1, 3}),
+            ("mlx-segment-ct", interactive, {0, 1, 255}),
+            ("mlx-segment-ctmr", {"classes": [300, 3]}, {0, 3, 300}),
         )
     ):
-        result = cast("RawRunner", runner)(
+        result = cast("RawRunner", medmlx.segment)(
+            model=model,
             image_path=source, weights_path=weights, output_dir=tmp_path / f"out{index}", **request
         )
         paths, artifacts = validate_outputs(result)

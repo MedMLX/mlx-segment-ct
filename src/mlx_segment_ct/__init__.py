@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         transform_points,
     )
     from mlx_segment_ct.labels import InteractivePrompt
+    from mlx_segment_ct.medmlx import segment
     from mlx_segment_ct.mlx_network import AutomaticModel, FeatureModel, required_shapes
     from mlx_segment_ct.mlx_point import PointModel, additional_shapes, correction_shapes
     from mlx_segment_ct.mlx_point_window import PointWindowPredictor
@@ -45,6 +46,7 @@ _EXPORTS = {
     "point_based_window_inferer": "mlx_segment_ct.correction_inferer",
     "required_shapes": "mlx_segment_ct.mlx_network",
     "rolling_logits": "mlx_segment_ct.streaming",
+    "segment": "mlx_segment_ct.medmlx",
     "transform_points": "mlx_segment_ct.interactive",
 }
 
@@ -66,6 +68,7 @@ __all__ = [
     "point_based_window_inferer",
     "required_shapes",
     "rolling_logits",
+    "segment",
     "transform_points",
 ]
 

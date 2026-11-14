@@ -1,8 +1,8 @@
 """MedMLX declaration and runner for the pinned NVIDIA VISTA3D bundles.
 
 Native automatic and interactive inference use MONAI 1.6.0 as their reference.
-``checkpoint`` selects the NV-Segment-CT or NV-Segment-CTMR bundle configuration
-for the same vista3d132 graph. Point corrections consume previous raw logits on
+The MedMLX model ID selects the NV-Segment-CT or NV-Segment-CTMR bundle
+configuration for the same vista3d132 graph. Point corrections consume previous raw logits on
 the preprocessed image grid.
 """
 
@@ -14,7 +14,6 @@ from collections.abc import Callable, Sequence
 from importlib.metadata import version
 from numbers import Integral
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, cast, overload
 
 from mlx_segment_ct._types import (
@@ -24,6 +23,7 @@ from mlx_segment_ct._types import (
     HostArray,
     Metrics,
     Modality,
+    ModelId,
     PatchCoordinates,
     PublishedDetails,
     Restoration,
@@ -36,9 +36,9 @@ if TYPE_CHECKING:
 
 import numpy as np
 from medmlx_core.errors import AssetNotReadyError, InvalidInputError, ModelExecutionError
+from medmlx_core.files import output_targets, publish
 from medmlx_core.outputs import artifact
-from medmlx_core.weights import weights_dir as model_weights_dir
-from medmlx_core.weights import weights_revision
+from medmlx_core.weights import model_folder, weights_revision
 
 from mlx_segment_ct.labels import CT_RULES, InteractivePrompt, LabelRules, Prompt, label_rules
 
@@ -50,7 +50,7 @@ MODEL = {
     "id": "mlx-segment-ct",
     "label": "NV-Segment-CT",
     "task": "segmentation",
-    "run": "mlx_segment_ct.medmlx:run",
+    "run": "mlx_segment_ct.medmlx:segment",
     # Measured MLX peak for all classes of a 768x768x101 abdominal CT; larger inputs need more.
     "peak_memory_gb": 6.0,
     "summary": (
@@ -64,7 +64,7 @@ CTMR_MODEL = {
     "id": "mlx-segment-ctmr",
     "label": "NV-Segment-CTMR",
     "task": "segmentation",
-    "run": "mlx_segment_ct.medmlx:run_ctmr",
+    "run": "mlx_segment_ct.medmlx:segment",
     # Measured MLX peak for all classes of a 576x468x72 abdominal MRI; larger inputs need more.
     "peak_memory_gb": 11.0,
     "summary": (
@@ -72,7 +72,12 @@ CTMR_MODEL = {
     ),
 }
 
-MASK_FILENAME = "mlx_segment_ct_mask.nii.gz"
+MASK_FILENAME = "mask.nii.gz"
+# Each MedMLX model ID selects one bundle configuration of the shared graph.
+CHECKPOINTS: dict[str, Checkpoint] = {
+    "mlx-segment-ct": "NV-Segment-CT",
+    "mlx-segment-ctmr": "NV-Segment-CTMR",
+}
 RESTORATIONS = ("scores", "bundle")
 AUTOMATIC_WEIGHTS = "automatic.safetensors"
 CORRECTION_WEIGHTS = "correction.safetensors"
@@ -84,29 +89,26 @@ _NETWORK_FAILURE = (
     "NV-Segment-CT MLX network failed; its ordered FP32 kernels need Apple Silicon Metal"
 )
 _WEIGHTS_HINT = (
-    "For NV-Segment-CT, download MedMLX/vista3d-ct-mlx at revision "
-    "e6f45856b4a59212ca10b44a9ade2e2d672f412b from Hugging Face. Pass its directory "
-    "as weights_path: automatic.safetensors is required, plus correction.safetensors "
-    "for point inference. For NV-Segment-CTMR, use MedMLX/vista3d-ctmr-mlx "
-    "and set checkpoint='NV-Segment-CTMR'."
+    "Omit weights_path to download it. A local NV-Segment-CT folder (MedMLX/vista3d-ct-mlx) "
+    "needs automatic.safetensors, plus correction.safetensors for point inference; "
+    "NV-Segment-CTMR uses MedMLX/vista3d-ctmr-mlx with model='mlx-segment-ctmr'."
 )
 
 
-def run(
+def segment(
     *,
+    model: ModelId,
     image_path: str | os.PathLike[str],
-    weights_path: str | os.PathLike[str] | None = None,
     output_dir: str | os.PathLike[str],
+    weights_path: str | os.PathLike[str] | None = None,
     segment_all: bool = False,
-    prompt: str | Sequence[str] | None = None,
-    label_prompt: Sequence[int] | None = None,
+    classes: str | Sequence[str] | Sequence[int] | None = None,
     previous_logits_path: str | os.PathLike[str] | None = None,
     points: Sequence[Sequence[float]] | None = None,
     point_labels: Sequence[int] | None = None,
     point_start: int = 0,
     interactive: bool = False,
     overwrite: bool = False,
-    checkpoint: Checkpoint = "NV-Segment-CT",
     modality: Modality | None = None,
     restoration: Restoration = "scores",
 ) -> RunResult:
@@ -115,7 +117,7 @@ def run(
     ``points`` and ``point_labels`` select interactive inference; ``interactive=True``
     explicitly requires that mode. Coordinates are source-grid voxel indices; codes
     are -1 (padding), 0/1 (exclude/include), or 2/3 (special exclude/include).
-    ``prompt`` accepts canonical bundle names; ``label_prompt`` accepts numeric IDs.
+    ``classes`` takes canonical bundle names or numeric IDs.
     Without points, coarse kidney/lung/bone labels expand to their subclasses.
 
     ``previous_logits_path`` accepts a float32 .npy array of shape (1, 1, X, Y, Z)
@@ -123,11 +125,12 @@ def run(
     the bundle branches and upstream component fusion; ``point_start`` selects new
     clicks while earlier clicks remain context. Inputs are preserved.
 
-    ``checkpoint`` selects settings for the supplied weights: ``"NV-Segment-CT"`` (default;
-    CT HU window, 128^3 windows, labels 0-254) or ``"NV-Segment-CTMR"``
+    ``model`` selects the bundle: ``"mlx-segment-ct"`` is NV-Segment-CT (CT HU
+    window, 128^3 windows, labels 0-254) and ``"mlx-segment-ctmr"`` is NV-Segment-CTMR
     (1st-99th percentile scaling, 192x192x128 windows, labels 0-345, prompts below
-    512). ``modality`` picks the NV-Segment-CTMR all-classes set (``"CT_BODY"``,
-    ``"MRI_BODY"`` default, or ``"MRI_BRAIN"``) and applies only without prompts.
+    512); MedMLX passes the declared ID. ``modality`` picks the NV-Segment-CTMR
+    all-classes set (``"CT_BODY"``, ``"MRI_BODY"`` default, or ``"MRI_BRAIN"``) and
+    applies only without prompts.
 
     ``restoration`` selects how labels return to the source grid. ``"scores"`` (default)
     interpolates the scores trilinearly at each source voxel and decides its label
@@ -139,33 +142,32 @@ def run(
     source unit code.
 
     The published ``MedMLX/vista3d-ct-mlx`` bundle supplies ``automatic.safetensors``
-    and ``correction.safetensors`` for ``checkpoint="NV-Segment-CT"``. The
-    matching CTMR bundle is ``MedMLX/vista3d-ctmr-mlx``; NVIDIA does not support
-    interactive point segmentation with that checkpoint.
+    and ``correction.safetensors`` for NV-Segment-CT. The CTMR bundle is
+    ``MedMLX/vista3d-ctmr-mlx``; NVIDIA does not support interactive point
+    segmentation with that checkpoint, and its point arguments are not qualified.
     The result holds absolute output paths, an ``artifacts`` description of the mask and
     JSON details. Masks preserve the source spatial shape and affine, with float32 global
     labels and 255 for uncovered voxels. The mask artifact is a ``label_map`` in
     ``image_physical`` space on ``image_path``'s grid; its labels are the classes this
     request can write: background plus the selected classes (with coarse prompts expanded
     to their subclasses), or background, the clicked object and 255 "uncovered" for point
-    prompts. ``run_ctmr`` returns the same structure.
+    prompts.
     Existing outputs require ``overwrite=True``. Invalid requests, missing weights
     and inference failures raise the corresponding medmlx-core error.
 
     Args:
+        model: ``"mlx-segment-ct"`` or ``"mlx-segment-ctmr"``.
         image_path: Single-channel CT or MRI NIfTI ``.nii`` or ``.nii.gz`` volume,
             according to the checkpoint.
-        weights_path: Optional model folder; omitted downloads ``MedMLX/vista3d-ct-mlx``.
-            The folder contains ``automatic.safetensors`` at its root;
-            point inference also requires ``correction.safetensors`` there. Use the
-            published ``MedMLX/vista3d-ct-mlx`` bundle for NV-Segment-CT.
-        output_dir: Directory for ``mlx_segment_ct_mask.nii.gz``; run details are returned.
+        weights_path: Optional model folder; omitted downloads ``MedMLX/vista3d-ct-mlx``
+            or ``MedMLX/vista3d-ctmr-mlx``. The folder contains ``automatic.safetensors``
+            at its root; point inference also requires ``correction.safetensors`` there.
+        output_dir: Directory for ``mask.nii.gz``; run details are returned.
         segment_all: Request the checkpoint's all-classes set; cannot be combined
             with class or point prompts. With no prompts, all classes are selected
             even when this flag is false (the default).
-        prompt: Canonical anatomy names as a list or comma-separated string, case
-            insensitive; use instead of ``label_prompt``. Default: None.
-        label_prompt: Numeric foreground IDs instead of names; at most one with points.
+        classes: Canonical anatomy names (a list or comma-separated string, case
+            insensitive) or a list of numeric foreground IDs; at most one with points.
             NV-Segment-CT IDs 133-254 and NV-Segment-CTMR IDs 346-511 require points.
             Point prompts reject coarse kidney (2), lung (20) and bone (21). Default: None.
         previous_logits_path: Optional float32 ``.npy`` raw logits, shape (1, 1, X, Y, Z)
@@ -180,58 +182,23 @@ def run(
             (the default).
         overwrite: Replace an existing output mask when true (default False);
             input aliases are refused.
-        checkpoint: Settings matching the supplied weights: ``"NV-Segment-CT"`` (default)
-            or ``"NV-Segment-CTMR"``.
         modality: All-classes set, only without prompts. NV-Segment-CT accepts ``"CT_BODY"``;
             NV-Segment-CTMR also accepts ``"MRI_BODY"`` and ``"MRI_BRAIN"``. Default None
             selects ``"CT_BODY"`` for NV-Segment-CT or ``"MRI_BODY"`` for NV-Segment-CTMR.
         restoration: ``"scores"`` (default) interpolates scores before deciding labels;
             ``"bundle"`` restores labels with nearest interpolation.
     """
-    return _run(
-        image_path=image_path, weights_path=weights_path, output_dir=output_dir,
-        segment_all=segment_all, prompt=prompt, label_prompt=label_prompt,
-        previous_logits_path=previous_logits_path, points=points, point_labels=point_labels,
-        point_start=point_start, interactive=interactive, overwrite=overwrite,
-        checkpoint=checkpoint, modality=modality, restoration=restoration,
-        automatic="mlx-segment-ct" if checkpoint == "NV-Segment-CT" else None,
-    )
-
-
-def _run(
-    *,
-    image_path: str | os.PathLike[str],
-    weights_path: str | os.PathLike[str] | None,
-    output_dir: str | os.PathLike[str],
-    segment_all: bool,
-    prompt: str | Sequence[str] | None,
-    label_prompt: Sequence[int] | None,
-    previous_logits_path: str | os.PathLike[str] | None,
-    points: Sequence[Sequence[float]] | None,
-    point_labels: Sequence[int] | None,
-    point_start: int,
-    interactive: bool,
-    overwrite: bool,
-    checkpoint: Checkpoint,
-    modality: Modality | None,
-    restoration: Restoration,
-    automatic: str | None,
-) -> RunResult:
-    """Check every argument, then resolve weights and run; see ``run`` for the contract.
-
-    ``automatic`` names the model whose weights download when ``weights_path`` is omitted;
-    without it an explicit folder is required. Nothing downloads before all checks pass.
-    """
     started = time.perf_counter()
     for name, value in (
-        ("overwrite", overwrite),
         ("segment_all", segment_all),
         ("interactive", interactive),
     ):
         if not isinstance(cast("object", value), bool):
             raise InvalidInputError(f"NV-Segment-CT {name} must be true or false")
-    if not isinstance(cast("object", checkpoint), str):
-        raise InvalidInputError("NV-Segment-CT checkpoint must be a string")
+    checkpoint = CHECKPOINTS.get(cast("str", model))
+    if checkpoint is None:
+        raise InvalidInputError(f"model must be one of {', '.join(CHECKPOINTS)}")
+    prompt, label_prompt = _classes(classes)
     if restoration not in RESTORATIONS:
         raise InvalidInputError(
             f"NV-Segment-CT restoration must be one of {', '.join(RESTORATIONS)}"
@@ -265,28 +232,11 @@ def _run(
                 "with label or point prompts"
             )
         rules.everything_labels(modality)
-    output = Path(output_dir).expanduser().absolute()
-    if output.exists() and not output.is_dir():
-        raise InvalidInputError(f"NV-Segment-CT output_dir is not a directory: {output}")
-    destination = output / MASK_FILENAME
-    inputs = {path.resolve() for path in (image_file, previous_file) if path is not None}
-    if destination.resolve() in inputs:
-        raise InvalidInputError("NV-Segment-CT outputs must be separate from the input CT and mask")
-    if destination.exists() and not overwrite:
-        raise InvalidInputError(
-            f"NV-Segment-CT output exists: {destination}; pass overwrite=true to replace it"
-        )
-    if weights_path is not None:
-        weights_root = Path(weights_path).expanduser()
-    elif automatic is not None:
-        weights_root = model_weights_dir(automatic)
-    else:
-        raise AssetNotReadyError(
-            "NV-Segment-CTMR requires an explicit matching weights_path folder.",
-            hint="Automatic mlx-segment-ct weights belong to NV-Segment-CT; "
-            "supply your converted CTMR folder for this advanced option.",
-        )
-    weights_dir = _weights_dir(weights_root, correction=point_mode)
+    sources = [path for path in (image_file, previous_file) if path is not None]
+    destination = output_targets(
+        output_dir, {"mask": MASK_FILENAME}, overwrite=overwrite, inputs=sources
+    )["mask"]
+    weights_dir = _weights_dir(model_folder(model, weights_path), correction=point_mode)
     return _infer_and_publish(
         weights_dir,
         image_file,
@@ -297,65 +247,6 @@ def _run(
         started,
         modality,
         restoration=restoration,
-    )
-
-
-def run_ctmr(
-    *,
-    image_path: str | os.PathLike[str],
-    output_dir: str | os.PathLike[str],
-    weights_path: str | os.PathLike[str] | None = None,
-    segment_all: bool = False,
-    prompt: str | Sequence[str] | None = None,
-    label_prompt: Sequence[int] | None = None,
-    previous_logits_path: str | os.PathLike[str] | None = None,
-    points: Sequence[Sequence[float]] | None = None,
-    point_labels: Sequence[int] | None = None,
-    point_start: int = 0,
-    interactive: bool = False,
-    overwrite: bool = False,
-    modality: Modality | None = None,
-    restoration: Restoration = "scores",
-) -> RunResult:
-    """Run the CTMR variant with its own automatic model folder and fixed settings.
-
-    Omitted weights use ``MedMLX/vista3d-ctmr-mlx``; an explicit folder contains
-    ``automatic.safetensors``. CTMR preprocessing and label rules are fixed
-    internally, so CT weights are never substituted. The shared point/correction
-    arguments are forwarded to ``run``, but NVIDIA does not support point
-    segmentation with this checkpoint. Their presence is not a qualification
-    of CTMR point inference.
-
-    Args:
-        image_path: Single-channel CT or MRI NIfTI volume; declared spatial units
-            must be millimeters or unknown (assumed millimeters).
-        output_dir: Directory for the restored label map.
-        weights_path: Optional model folder containing ``automatic.safetensors``;
-            omit to reuse the automatic CTMR download.
-        segment_all: Request all classes for the selected modality; no prompts also
-            selects this mode.
-        prompt: Anatomy names instead of numeric class IDs.
-        label_prompt: Numeric foreground IDs instead of anatomy names.
-        previous_logits_path: Advanced shared correction input; requires point
-            prompts, which NVIDIA does not support for CTMR.
-        points: Advanced shared source-grid ``(x, y, z)`` point coordinates;
-            CTMR point inference is not supported by NVIDIA.
-        point_labels: Include/exclude codes paired with ``points``.
-        point_start: Index of the first new click for the shared point interface.
-        interactive: Require the shared point-prompt mode; see its support limit above.
-        overwrite: Replace an existing output; inputs remain protected from aliasing.
-        modality: All-classes set: ``CT_BODY``, ``MRI_BODY`` or ``MRI_BRAIN``.
-            None selects ``MRI_BODY``. Inapplicable to class or point prompts.
-        restoration: ``scores`` interpolates scores before selecting labels;
-            ``bundle`` restores labels with the bundle's nearest-neighbor rule.
-    """
-    return _run(
-        image_path=image_path, weights_path=weights_path, output_dir=output_dir,
-        segment_all=segment_all, prompt=prompt, label_prompt=label_prompt,
-        previous_logits_path=previous_logits_path, points=points, point_labels=point_labels,
-        point_start=point_start, interactive=interactive, overwrite=overwrite,
-        checkpoint="NV-Segment-CTMR", modality=modality, restoration=restoration,
-        automatic="mlx-segment-ctmr",
     )
 
 
@@ -382,7 +273,7 @@ def _infer_and_publish(
     *,
     restoration: str = "scores",
 ) -> RunResult:
-    """Run the planned request on MLX and publish the mask; see ``run`` for the contract."""
+    """Run the planned request on MLX and publish the mask; see ``segment`` for the contract."""
     from medmlx_core.runtime import (
         import_mlx,
         mlx_default_device_name,
@@ -391,7 +282,6 @@ def _infer_and_publish(
     mx = cast("CoreRuntime", import_mlx())
     mx.synchronize()
     mx.reset_peak_memory()
-    destination.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(plan, InteractivePrompt):
         details = _interactive(
             mx,
@@ -441,6 +331,24 @@ def _infer_and_publish(
         },
         "details": cast("PublishedDetails", details),
     }
+
+
+def _classes(classes: object) -> tuple[object, object]:
+    """Split ``classes`` into the bundle's name prompt and numeric label prompt.
+
+    Names are a string (comma-separated allowed) or a list of strings; IDs are a list
+    of integers. A mixed list is refused, as the bundle takes one kind per request.
+    """
+    if classes is None or isinstance(classes, str):
+        return classes, None
+    if isinstance(classes, Sequence):
+        items = cast("Sequence[object]", classes)
+        if items and all(isinstance(item, str) for item in items):
+            return items, None
+        # Booleans pass here and are refused by _parse_label_id with the ID error.
+        if all(isinstance(item, Integral) for item in items):
+            return None, items
+    raise InvalidInputError("classes must be anatomy names or numeric label IDs, not both")
 
 
 def resolve_interactive_request(
@@ -561,7 +469,7 @@ def _interactive(
     restored = np.nan_to_num(restored, nan=255.0)
     if not np.isin(restored, [0, prompt.output_label, 255]).all():
         raise ModelExecutionError("Interactive restored mask contains invalid labels")
-    _publish(destination, lambda path: save_label_map(path, restored, restored_affine))
+    publish({destination: lambda path: save_label_map(path, restored, restored_affine)})
     return {
         "mode": "interactive" if previous is None else "correction",
         "label_prompt": [] if prompt.class_label is None else [prompt.class_label],
@@ -679,7 +587,7 @@ def _segment(
     # becomes 255 and fails validation unless 255 is a selected class.
     restored = np.nan_to_num(restored, nan=255.0)
     validate_labels(restored, class_ids)
-    _publish(destination, lambda path: save_label_map(path, restored, restored_affine))
+    publish({destination: lambda path: save_label_map(path, restored, restored_affine)})
     values = set(class_ids) | {0}
     details: Details = {
         "mode": "segment_all" if label_ids is None else "class_prompt",
@@ -987,16 +895,3 @@ def validate_labels(labels: HostArray, class_ids: Sequence[int]) -> None:
         invalid = bool((~legal[np.clip(labels.astype(np.int64), 0, 511)]).any())
     if invalid:
         raise ModelExecutionError("NV restored mask contains invalid or non-anatomical labels")
-
-
-def _publish(destination: Path, write: Callable[[Path], None]) -> None:
-    """Write next to the destination, then replace it atomically."""
-    with NamedTemporaryFile(
-        dir=destination.parent, prefix=".mlx-segment-", suffix=".nii.gz", delete=False
-    ) as handle:
-        staged = Path(handle.name)
-    try:
-        write(staged)
-        os.replace(staged, destination)
-    finally:
-        staged.unlink(missing_ok=True)

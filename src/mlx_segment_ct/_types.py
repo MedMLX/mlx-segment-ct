@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from mlx.core import Dtype, array
 
 type Checkpoint = Literal["NV-Segment-CT", "NV-Segment-CTMR"]
+type ModelId = Literal["mlx-segment-ct", "mlx-segment-ctmr"]
 type Modality = Literal["CT_BODY", "MRI_BODY", "MRI_BRAIN"]
 type Restoration = Literal["scores", "bundle"]
 
@@ -257,19 +258,18 @@ class RunResult(TypedDict):
 
 
 class RunArguments(TypedDict, total=False):
+    model: Required[ModelId]
     image_path: str | PathLike[str]
     weights_path: str | PathLike[str]
     output_dir: str | PathLike[str]
     segment_all: bool
-    prompt: str | Sequence[str] | None
-    label_prompt: Sequence[int] | None
+    classes: str | Sequence[str] | Sequence[int] | None
     previous_logits_path: str | PathLike[str] | None
     points: Sequence[Sequence[float]] | None
     point_labels: Sequence[int] | None
     point_start: int
     interactive: bool
     overwrite: bool
-    checkpoint: Checkpoint
     modality: Modality | None
     restoration: Restoration
 
