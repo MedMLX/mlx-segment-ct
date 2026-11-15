@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from mlx_segment_ct.mlx_worker import automatic_logits
     from mlx_segment_ct.streaming import LabelReducer, bounded_labels, rolling_logits
 
-__version__ = "0.3.6"
+__version__ = "0.4.0"
 
 _EXPORTS = {
     "AutomaticModel": "mlx_segment_ct.mlx_network",
