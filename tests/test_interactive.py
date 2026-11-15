@@ -236,7 +236,7 @@ def test_runner_matches_bundle_nifti_geometry_and_labels(
         classes=None if info["target"] is None else [info["target"]],
         restoration="bundle",
     )
-    result = medmlx.segment(**kwargs)
+    result = medmlx.run(**kwargs)
     saved = load_nifti(result["outputs"]["mask"])
     assert np.array_equal(np.asanyarray(saved.dataobj), data["mask"])
     assert np.array_equal(saved.affine, data["mask_affine"])
@@ -245,7 +245,7 @@ def test_runner_matches_bundle_nifti_geometry_and_labels(
     # By default the post-processed scores are restored at source resolution.
     point.calls = auto.calls = 0
     kwargs["restoration"], kwargs["overwrite"] = "scores", True
-    scored = medmlx.segment(**kwargs)
+    scored = medmlx.run(**kwargs)
     field = interactive_scores(data["logits"], transformed)
     labels, interior, margin = dense_restoration(
         field, prepared.affine, affine, volume.shape[1:], [original.output_label]
@@ -295,7 +295,7 @@ def test_previous_logits_runner_matches_upstream(
     model, auto = RecordedPoint(data), RecordedAutomatic(data)
     replay_models(monkeypatch, lambda *a, **k: model, lambda *a, **k: auto)
     monkeypatch.setattr(medmlx, "ROI_SIZE", tuple(info["roi"]))
-    result = medmlx.segment(
+    result = medmlx.run(
         model="mlx-segment-ct",
         image_path=source,
         weights_path=touch_weights(tmp_path),

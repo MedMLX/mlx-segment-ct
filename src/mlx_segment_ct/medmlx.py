@@ -50,7 +50,7 @@ MODEL = {
     "id": "mlx-segment-ct",
     "label": "NV-Segment-CT",
     "task": "segmentation",
-    "run": "mlx_segment_ct.medmlx:segment",
+    "run": "mlx_segment_ct.medmlx:run",
     # Measured MLX peak for all classes of a 768x768x101 abdominal CT; larger inputs need more.
     "peak_memory_gb": 6.0,
     "summary": (
@@ -64,7 +64,7 @@ CTMR_MODEL = {
     "id": "mlx-segment-ctmr",
     "label": "NV-Segment-CTMR",
     "task": "segmentation",
-    "run": "mlx_segment_ct.medmlx:segment",
+    "run": "mlx_segment_ct.medmlx:run",
     # Measured MLX peak for all classes of a 576x468x72 abdominal MRI; larger inputs need more.
     "peak_memory_gb": 11.0,
     "summary": (
@@ -95,7 +95,7 @@ _WEIGHTS_HINT = (
 )
 
 
-def segment(
+def run(
     *,
     model: ModelId,
     image_path: str | os.PathLike[str],
@@ -273,7 +273,7 @@ def _infer_and_publish(
     *,
     restoration: str = "scores",
 ) -> RunResult:
-    """Run the planned request on MLX and publish the mask; see ``segment`` for the contract."""
+    """Run the planned request on MLX and publish the mask; see ``run`` for the contract."""
     from medmlx_core.runtime import (
         import_mlx,
         mlx_default_device_name,

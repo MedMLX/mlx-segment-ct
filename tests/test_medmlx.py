@@ -287,7 +287,7 @@ def test_segment_matches_upstream_worker(
     data, info = load_fixture("medmlx_segment")
     case = cast("SegmentMetadata", cast("CasesMetadata", info)["cases"][name])
     source = write_nifti(tmp_path / f"{name}.nii.gz", data[f"{name}::nifti"])
-    result = medmlx.segment(
+    result = medmlx.run(
         model="mlx-segment-ct",
         image_path=str(source),
         weights_path=str(weights_dir),
@@ -317,7 +317,7 @@ def test_segment_ctmr_matches_upstream_worker(
     # The sagittal case runs MRI_BODY's 50 classes in a smaller window.
     monkeypatch.setattr(medmlx, "CTMR_ROI_SIZE", tuple(case["roi"]))
     source = write_nifti(tmp_path / f"{name}.nii.gz", data[f"{name}::nifti"])
-    result = medmlx.segment(
+    result = medmlx.run(
         model="mlx-segment-ctmr",
         image_path=str(source),
         weights_path=str(weights_dir),
@@ -382,7 +382,7 @@ def test_segment_rejects_invalid_inputs(
             value = tmp_path / value
         kwargs[key] = value
     with pytest.raises(InvalidInputError):
-        cast("RawRunner", medmlx.segment)(**kwargs)
+        cast("RawRunner", medmlx.run)(**kwargs)
 
 
 def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: CoreRuntime) -> None:
@@ -429,7 +429,7 @@ def test_segment_full_networks_end_to_end_on_metal(
             ("mlx-segment-ctmr", {"classes": [300, 3]}, {0, 3, 300}),
         )
     ):
-        result = cast("RawRunner", medmlx.segment)(
+        result = cast("RawRunner", medmlx.run)(
             model=model,
             image_path=source, weights_path=weights, output_dir=tmp_path / f"out{index}", **request
         )

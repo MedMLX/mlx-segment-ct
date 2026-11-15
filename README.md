@@ -37,14 +37,14 @@ uv pip install "mlx-segment-ct>=0.3.6"
 ## Run
 
 ```python
-from mlx_segment_ct import segment
+from mlx_segment_ct import run
 
-segment(model="mlx-segment-ct", image_path="ct.nii.gz", output_dir="all")
-segment(
+run(model="mlx-segment-ct", image_path="ct.nii.gz", output_dir="all")
+run(
     model="mlx-segment-ct", image_path="ct.nii.gz", output_dir="organs",
     classes="liver, spleen",
 )
-segment(
+run(
     model="mlx-segment-ct", image_path="ct.nii.gz", output_dir="points",
     points=[[40, 50, 30], [44, 51, 30]], point_labels=[1, 0],
 )
@@ -137,7 +137,7 @@ point branch. A class prompt whose clicks are all padding keeps the automatic br
 A correction passes the previous raw logits, before sigmoid or postprocessing:
 
 ```python
-segment(
+run(
     model="mlx-segment-ct", image_path="ct.nii.gz", output_dir="corrected", classes=[26],
     previous_logits_path="previous.npy",
     points=[[40, 50, 30], [44, 51, 30]], point_labels=[1, 0], point_start=1,
