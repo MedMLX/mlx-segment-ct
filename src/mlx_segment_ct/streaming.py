@@ -309,6 +309,8 @@ def stream_scores[ArrayT: ArrayValue](
                 values = np.asarray(memoryview(cast("Buffer", prediction)))
                 drain()
                 queued.append(host.submit(accumulate, origin, spatial, values))
+                # The queued view owns the buffer until accumulation finishes.
+                del values, prediction
             end = groups[index + 1][0] if index + 1 < len(groups) else padded[0]
             queued.append(host.submit(finish, origin, end))
         drain()
