@@ -137,6 +137,11 @@ class HostArrays:
         pass
 
     @staticmethod
+    def set_cache_limit(_limit: int) -> int:
+        """Host arrays have no MLX free-buffer cache."""
+        return 0
+
+    @staticmethod
     def reset_peak_memory() -> None:
         pass
 

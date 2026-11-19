@@ -14,6 +14,7 @@ from collections.abc import Callable, Sequence
 from importlib.metadata import version
 from numbers import Integral
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, cast, overload
 
 from mlx_segment_ct._types import (
@@ -85,6 +86,8 @@ SOURCE_REVISION = "f9f5f51b589e5dc9c23c453cf5138398e4084056"
 ROI_SIZE = (128, 128, 128)
 CTMR_ROI_SIZE = (192, 192, 128)
 WARNING = "Model output requires human review and is not ground truth."
+_CACHE_LIMIT_BYTES = 1 << 30
+_INFERENCE_LOCK = Lock()
 _NETWORK_FAILURE = (
     "NV-Segment-CT MLX network failed; its ordered FP32 kernels need Apple Silicon Metal"
 )
@@ -280,24 +283,35 @@ def _infer_and_publish(
     )
 
     mx = cast("CoreRuntime", import_mlx())
-    mx.synchronize()
-    mx.reset_peak_memory()
-    if isinstance(plan, InteractivePrompt):
-        details = _interactive(
-            mx,
-            weights_dir,
-            image_file,
-            destination,
-            plan,
-            previous_file=previous_file,
-            point_start=point_start,
-            restoration=restoration,
-        )
-    else:
-        details = _segment(
-            mx, weights_dir, image_file, destination, plan, modality, restoration=restoration
-        )
-    mx.synchronize()
+    # The cache limit and peak counter are process-wide for MLX. Keep requests
+    # through this runner from changing either while another request uses them.
+    with _INFERENCE_LOCK:
+        mx.synchronize()
+        previous_limit = mx.set_cache_limit(_CACHE_LIMIT_BYTES)
+        try:
+            if previous_limit < _CACHE_LIMIT_BYTES:
+                mx.set_cache_limit(previous_limit)
+            mx.reset_peak_memory()
+            if isinstance(plan, InteractivePrompt):
+                details = _interactive(
+                    mx,
+                    weights_dir,
+                    image_file,
+                    destination,
+                    plan,
+                    previous_file=previous_file,
+                    point_start=point_start,
+                    restoration=restoration,
+                )
+            else:
+                details = _segment(
+                    mx, weights_dir, image_file, destination, plan, modality,
+                    restoration=restoration,
+                )
+            mx.synchronize()
+            peak_memory = mx.get_peak_memory()
+        finally:
+            mx.set_cache_limit(previous_limit)
     details.update(
         weights_revision=weights_revision(weights_dir),
         checkpoint=plan.rules.checkpoint,
@@ -307,7 +321,7 @@ def _infer_and_publish(
         mlx_default_device=mlx_default_device_name(mx),
         precision="float32",
         source_revision=SOURCE_REVISION,
-        mlx_peak_memory_bytes=mx.get_peak_memory(),
+        mlx_peak_memory_bytes=peak_memory,
         elapsed_seconds=round(time.perf_counter() - started, 6),
         warning=WARNING,
     )

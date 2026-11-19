@@ -402,8 +402,20 @@ def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: Core
     with pytest.raises(AssetNotReadyError):
         medmlx.load_weights(mx, weights, {})
     weights.write_bytes(b"corrupt")
-    with pytest.raises(AssetNotReadyError):
-        medmlx.load_weights(mx, weights, {})
+    source = write_nifti(tmp_path / "ct.nii.gz", ct_volume())
+    caller_limit = 3 << 30
+    previous = mx.set_cache_limit(caller_limit)
+    try:
+        with pytest.raises(AssetNotReadyError):
+            medmlx.run(
+                model="mlx-segment-ct",
+                image_path=source,
+                weights_path=tmp_path,
+                output_dir=tmp_path / "out",
+            )
+        assert mx.set_cache_limit(caller_limit) == caller_limit
+    finally:
+        mx.set_cache_limit(previous)
 
 
 def test_segment_full_networks_end_to_end_on_metal(

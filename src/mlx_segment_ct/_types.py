@@ -70,6 +70,9 @@ class CoreRuntime(MlxRuntime, Protocol):
     def synchronize(self) -> None:
         """Wait for outstanding native work to complete."""
         ...
+    def set_cache_limit(self, limit: int) -> int:
+        """Set the free-buffer limit in bytes and return the preceding limit."""
+        ...
     def async_eval(self, *args: ArrayTree) -> None:
         """Schedule evaluation of native array trees."""
         ...
