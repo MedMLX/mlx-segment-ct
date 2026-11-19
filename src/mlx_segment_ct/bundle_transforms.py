@@ -548,7 +548,10 @@ def _grid_sample(
     base_w = base_axis(width)[None, None, :]
     base_h = base_axis(height)[None, :, None]
     base_d = base_axis(depth)[:, None, None]
-    source = volume.astype(np.float64) if mode == "bilinear" else volume
+    # NiBabel returns column-major voxels. Making the float64 copy row-major lets the
+    # corner gathers read memory in output order, several times faster, with every
+    # value unchanged.
+    source = np.ascontiguousarray(volume, dtype=np.float64) if mode == "bilinear" else volume
     output = np.empty((volume.shape[0], depth, height, width), dtype=np.float32)
     rows = max(1, _CHUNK_VOXELS // max(1, height * width))
     for first in range(0, depth, rows):
