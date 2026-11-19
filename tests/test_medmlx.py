@@ -402,8 +402,17 @@ def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: Core
     with pytest.raises(AssetNotReadyError):
         medmlx.load_weights(mx, weights, {})
     weights.write_bytes(b"corrupt")
+    with pytest.raises(AssetNotReadyError):
+        medmlx.load_weights(mx, weights, {})
+
+
+@pytest.mark.parametrize("caller_limit", [256 << 20, 3 << 30], ids=["below_1gib", "above_1gib"])
+def test_run_restores_caller_cache_limit_after_failure(
+    tmp_path: Path, mx: CoreRuntime, caller_limit: int
+) -> None:
+    """Leave the caller's MLX cache limit unchanged, below or above the 1 GiB run limit."""
+    (tmp_path / "automatic.safetensors").write_bytes(b"corrupt")
     source = write_nifti(tmp_path / "ct.nii.gz", ct_volume())
-    caller_limit = 3 << 30
     previous = mx.set_cache_limit(caller_limit)
     try:
         with pytest.raises(AssetNotReadyError):
