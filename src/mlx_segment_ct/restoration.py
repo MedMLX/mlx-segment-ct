@@ -20,7 +20,7 @@ is outside the grid is background and one whose nearest neighbor is uncovered is
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -42,9 +42,10 @@ class _Plane:
 
 @dataclass(frozen=True, slots=True)
 class _AxisBuckets:
-    axes: tuple[IntArray, IntArray, IntArray]  # source indices with in-grid nearest neighbors
-    plane_axis: int  # source axis that drives preprocessed axis 0
-    plane_buckets: IntArray  # floor(p0) + 1 for the retained indices on plane_axis
+    axes: tuple[IntArray, IntArray, IntArray]  # source indices in preprocessed axis order
+    positions: tuple[HostArray, HostArray, HostArray]  # corresponding preprocessed positions
+    source_axes: tuple[int, ...]  # source axis driving each preprocessed axis
+    plane_buckets: IntArray  # floor(p0) + 1 in axes[0] order
     offsets: IntArray
 
 
@@ -119,29 +120,30 @@ class ScoreRestorer:
             )
         ):
             return None
-        source_axes = np.argmax(linear, axis=1)
-        axes: list[IntArray] = [np.arange(size, dtype=np.int64) for size in grid.source_shape]
-        plane_buckets = np.empty(0, dtype=np.int64)
-        for row, value in enumerate(source_axes):
-            source_axis = int(value)
-            varying = axes[source_axis]
+        source_axes = tuple(int(axis) for axis in np.argmax(linear, axis=1))
+        axes: list[IntArray] = []
+        positions: list[HostArray] = []
+        for row, source_axis in enumerate(source_axes):
+            varying = np.arange(grid.source_shape[source_axis], dtype=np.int64)
             indices = [np.zeros(varying.size, dtype=np.int64) for _ in range(3)]
             indices[source_axis] = varying
             # Use the grid's Torch-compatible arithmetic, including axis-map rounding.
             position = grid.coordinates(*indices)[row]
             nearest = np.rint(position)
             inside = (nearest >= 0) & (nearest < grid.preprocessed_shape[row])
-            axes[source_axis] = varying[inside]
-            if row == 0:
-                plane_buckets = (np.floor(position[inside]) + 1).astype(np.int64)
-        plane_axis = int(source_axes[0])
+            axes.append(varying[inside])
+            positions.append(position[inside])
+        plane_buckets = np.floor(positions[0]).astype(np.int64) + 1
         counts = np.bincount(plane_buckets, minlength=self._planes + 2)
-        other_voxels = int(
-            np.prod([axis.size for index, axis in enumerate(axes) if index != plane_axis])
-        )
-        counts *= other_voxels
+        counts *= axes[1].size * axes[2].size
         offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
-        return _AxisBuckets((axes[0], axes[1], axes[2]), plane_axis, plane_buckets, offsets)
+        return _AxisBuckets(
+            (axes[0], axes[1], axes[2]),
+            (positions[0], positions[1], positions[2]),
+            source_axes,
+            plane_buckets,
+            offsets,
+        )
 
     def _buckets(self) -> tuple[HostArray, IntArray]:
         """Source voxel indices sorted by bucket ``floor(p0) + 1``, and bucket offsets.
@@ -178,29 +180,6 @@ class ScoreRestorer:
             cursor += chunk_counts
         return order, offsets
 
-    def _indices(self, bucket: int, step: int) -> Iterator[IntArray]:
-        """Yield each bucket in source-flat order without a volume-sized separable index array."""
-        if self._axis_buckets is None:
-            assert self._order is not None
-            indices = self._order[self._offsets[bucket] : self._offsets[bucket + 1]]
-            for start in range(0, indices.size, step):
-                yield indices[start : start + step].astype(np.int64, copy=False)
-            return
-        axis_buckets = self._axis_buckets
-        axes = list(axis_buckets.axes)
-        axis = axis_buckets.plane_axis
-        axes[axis] = axes[axis][axis_buckets.plane_buckets == bucket]
-        d, h, w = axes
-        shape = (d.size, h.size, w.size)
-        total = int(np.prod(shape))
-        for start in range(0, total, step):
-            di, hi, wi = _unravel(np.arange(start, min(total, start + step)), shape)
-            flat = (
-                (d[di] * self._grid.source_shape[1] + h[hi]) * self._grid.source_shape[2] + w[wi]
-            )
-            del di, hi, wi
-            yield flat
-
     def _restore(self, bucket: int, lower: _Plane | None, upper: _Plane | None) -> None:
         """Restore the voxels between preprocessed planes ``bucket - 1`` and ``bucket``."""
         if self._offsets[bucket] == self._offsets[bucket + 1]:
@@ -223,21 +202,68 @@ class ScoreRestorer:
             for plane in pair
         )
         step = max(1, min(_CHUNK_VOXELS, _GATHER_VALUES // max(1, active.size)))
+
+        def interpolate(p0: HostArray, p1: HostArray, p2: HostArray) -> FloatArray:
+            return self._mixed(
+                bucket - 1,
+                (p0, p1, p2),
+                (pair[0].covered, pair[1].covered),
+                (values[0], values[1]),
+                self._ids[active],
+            )
+
+        if self._axis_buckets is not None:
+            self._restore_separable(bucket, self._axis_buckets, uniform, first, step, interpolate)
+            return
+
+        assert self._order is not None
+        indices = self._order[self._offsets[bucket] : self._offsets[bucket + 1]]
         output = self._output.reshape(-1)
-        for flat in self._indices(bucket, step):
+        for start in range(0, indices.size, step):
+            flat = indices[start : start + step].astype(np.int64, copy=False)
             p0, p1, p2 = self._grid.coordinates(*_unravel(flat, self._grid.source_shape))
             cell = (np.floor(p1).astype(np.int64) + 1, np.floor(p2).astype(np.int64) + 1)
             result = np.where(uniform[cell], first[cell], np.float32(0)).astype(np.float32)
             mixed = np.flatnonzero(~uniform[cell])
             if mixed.size:
-                result[mixed] = self._mixed(
-                    bucket - 1,
-                    (p0[mixed], p1[mixed], p2[mixed]),
-                    (pair[0].covered, pair[1].covered),
-                    (values[0], values[1]),
-                    self._ids[active],
-                )
+                result[mixed] = interpolate(p0[mixed], p1[mixed], p2[mixed])
             output[flat] = result
+
+    def _restore_separable(
+        self,
+        bucket: int,
+        axes: _AxisBuckets,
+        uniform: BoolArray,
+        first: FloatArray,
+        step: int,
+        interpolate: Callable[[HostArray, HostArray, HostArray], FloatArray],
+    ) -> None:
+        """Map each transverse cell once for all source planes enclosed by this bucket."""
+        selected = axes.plane_buckets == bucket
+        px, py, pz = axes.positions
+        dx, dy, dz = axes.axes
+        jy = np.floor(py).astype(np.int64) + 1
+        jz = np.floor(pz).astype(np.int64) + 1
+        output = self._output.transpose(axes.source_axes)
+        # Bound the 2D map on wide source grids independently of the score gathers.
+        width = min(jz.size, _CHUNK_VOXELS)
+        height = _CHUNK_VOXELS // width
+        for y_start in range(0, jy.size, height):
+            y = slice(y_start, y_start + height)
+            for z_start in range(0, jz.size, width):
+                z = slice(z_start, z_start + width)
+                cell = jy[y, None], jz[None, z]
+                result = first[cell]
+                mixed_y, mixed_z = np.nonzero(~uniform[cell])
+                mixed_py, mixed_pz = py[y][mixed_y], pz[z][mixed_z]
+                for dest, position in zip(dx[selected], px[selected], strict=True):
+                    for start in range(0, mixed_y.size, step):
+                        subset = slice(start, start + step)
+                        mixed_px = np.full(mixed_py[subset].size, position, dtype=px.dtype)
+                        result[mixed_y[subset], mixed_z[subset]] = interpolate(
+                            mixed_px, mixed_py[subset], mixed_pz[subset]
+                        )
+                    output[dest, dy[y, None], dz[None, z]] = result
 
     def _mixed(
         self,
