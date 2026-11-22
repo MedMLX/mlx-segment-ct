@@ -8,7 +8,7 @@ they do not replace either runtime or claim complete upstream API coverage.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from os import PathLike
 from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, Required, TypedDict
 
@@ -136,8 +136,10 @@ class JointPredictor[ArrayT](Protocol):
 
 
 class CoordinatePredictor[ArrayT](Protocol):
-    def __call__(self, image: ArrayT, coordinates: PatchCoordinates, /) -> ArrayT:
-        """Predict a window using its coordinates in the full image."""
+    def __call__(
+        self, image: ArrayT, coordinates: PatchCoordinates, /
+    ) -> ArrayT | Iterator[ArrayT]:
+        """Predict one window as a score tensor or successive class blocks."""
         ...
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from importlib.metadata import version
 from numbers import Integral
 from pathlib import Path
@@ -29,6 +29,7 @@ from mlx_segment_ct._types import (
     PublishedDetails,
     Restoration,
     RollingMetrics,
+    RollingMetricsBuilder,
     RunResult,
 )
 
@@ -560,19 +561,17 @@ def _segment(
         raise ModelExecutionError(f"{_NETWORK_FAILURE}: {exc}") from exc
     volume, affine = load_volume(image_file)
     prepared = preprocess(volume, affine, intensity=intensity)
+    del volume
     inputs = prepared.image[None]
-    metrics: Metrics = {"patch_seconds": []}
+    metrics: RollingMetricsBuilder = {}
+    patch_count = 0
     load_seconds = time.perf_counter() - tick
 
-    def predict(patch: array, coordinates: PatchCoordinates) -> array:
-        """Run and time one automatic segmentation patch on the native runtime."""
-        mx.synchronize()
-        start = time.perf_counter()
-        logits = model(patch)
-        mx.eval(logits)
-        mx.synchronize()
-        metrics["patch_seconds"].append(time.perf_counter() - start)
-        return logits
+    def predict(patch: array, coordinates: PatchCoordinates) -> Iterator[array]:
+        """Build the class projections for one patch in class-ID order."""
+        nonlocal patch_count
+        patch_count += 1
+        return model.logit_blocks(patch)
 
     restorer = (
         ScoreRestorer(prepared.restoration_grid(), class_ids) if restoration == "scores" else None
@@ -599,7 +598,7 @@ def _segment(
         restored, restored_affine = restorer.finish()
     # Streaming raises on missing coverage, so NaN is not expected here. Any that remains
     # becomes 255 and fails validation unless 255 is a selected class.
-    restored = np.nan_to_num(restored, nan=255.0)
+    np.copyto(restored, np.float32(255), where=np.isnan(restored))
     validate_labels(restored, class_ids)
     publish({destination: lambda path: save_label_map(path, restored, restored_affine)})
     values = set(class_ids) | {0}
@@ -620,7 +619,7 @@ def _segment(
         "blend_mode": "constant",
         "padding_mode": "replicate",
         "padded_shape": cast("RollingMetrics", metrics)["padded_shape"],
-        "patch_count": len(metrics["patch_seconds"]),
+        "patch_count": patch_count,
         "load_preprocess_seconds": round(load_seconds, 6),
         "inference_stitch_seconds": round(inference_seconds, 6),
         "restore_save_seconds": round(time.perf_counter() - tick, 6),
@@ -902,10 +901,14 @@ def validate_labels(labels: HostArray, class_ids: Sequence[int]) -> None:
     # Lookup table over global IDs 0-511; 511 is the largest NV-Segment-CTMR prompt ID.
     legal = np.zeros(512, dtype=bool)
     legal[[0, *class_ids]] = True
-    invalid = not np.isfinite(labels).all() or bool(
-        ((labels < 0) | (labels > 511) | (labels != np.floor(labels))).any()
+    # Visit masks in storage order, with bounded buffers even for transposed images.
+    tiles = np.nditer(
+        labels, flags=["external_loop", "buffered", "zerosize_ok"], buffersize=1 << 20
     )
-    if not invalid:
-        invalid = bool((~legal[np.clip(labels.astype(np.int64), 0, 511)]).any())
-    if invalid:
-        raise ModelExecutionError("NV restored mask contains invalid or non-anatomical labels")
+    for tile in cast("Iterator[HostArray]", tiles):
+        if (
+            not np.isfinite(tile).all()
+            or ((tile < 0) | (tile > 511) | (tile != np.floor(tile))).any()
+            or not legal[tile.astype(np.uint16)].all()
+        ):
+            raise ModelExecutionError("NV restored mask contains invalid or non-anatomical labels")

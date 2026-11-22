@@ -87,7 +87,7 @@ class ScoreRestorer:
             values[~covered] = 0
         labels = _decide(values.reshape(-1, self._ids.size), self._ids).reshape(shape)
         labels[~covered] = np.nan
-        current = _Plane(values, labels, covered, (values > 0).any(axis=(0, 1)))
+        current = _Plane(values, labels, covered, np.max(values, axis=(0, 1), initial=0) > 0)
         self._restore(index, self._previous, current)
         self._previous = current
         self._next += 1
@@ -278,29 +278,34 @@ class ScoreRestorer:
         p0, p1, p2 = coords
         y0, z0 = np.floor(p1).astype(np.int64), np.floor(p2).astype(np.int64)
         fx, fy, fz = p0 - lower_index, p1 - y0, p2 - z0
-        # The neighbor nearest restoration rounds to (half to even on absolute indices).
-        nearest = (
-            np.rint(p0).astype(np.int64) - lower_index,
-            np.rint(p1).astype(np.int64) - y0,
-            np.rint(p2).astype(np.int64) - z0,
+        # Round absolute coordinates to even, independently of the interpolation.
+        nearest_y = _clip(np.rint(p1).astype(np.int64), size_y)
+        nearest_z = _clip(np.rint(p2).astype(np.int64), size_z)
+        nearest_covered = np.where(
+            np.rint(p0) == lower_index,
+            covered[0][nearest_y, nearest_z],
+            covered[1][nearest_y, nearest_z],
         )
+        ys = (_clip(y0, size_y), _clip(y0 + 1, size_y))
+        zs = (_clip(z0, size_z), _clip(z0 + 1, size_z))
         total = np.zeros((p0.size, ids.size), dtype=np.float32)
         weight_sum = np.zeros(p0.size, dtype=np.float32)
-        nearest_covered = np.zeros(p0.size, dtype=bool)
         for dx, wx in ((0, 1 - fx), (1, fx)):
             for dy, wy in ((0, 1 - fy), (1, fy)):
                 for dz, wz in ((0, 1 - fz), (1, fz)):
-                    y, z = _clip(y0 + dy, size_y), _clip(z0 + dz, size_z)
+                    y, z = ys[dy], zs[dz]
                     usable = covered[dx][y, z]
-                    is_nearest = (nearest[0] == dx) & (nearest[1] == dy) & (nearest[2] == dz)
-                    nearest_covered |= is_nearest & usable
                     weight = np.where(usable, wx * wy * wz, 0).astype(np.float32)
-                    total += values[dx][y, z] * weight[:, None]
+                    # Advanced indexing owns this gather, so weighting can reuse it.
+                    weighted = values[dx][y, z]
+                    weighted *= weight[:, None]
+                    total += weighted
+                    del weighted
                     weight_sum += weight
         with np.errstate(divide="ignore", invalid="ignore"):
-            scores = total / weight_sum[:, None]
-        scores[~nearest_covered] = 0
-        labels = _decide(scores, ids)
+            total /= weight_sum[:, None]
+        total[~nearest_covered] = 0
+        labels = _decide(total, ids)
         return np.where(nearest_covered, labels, np.float32(np.nan)).astype(np.float32)
 
 
@@ -308,8 +313,9 @@ def _decide(scores: FloatArray, ids: FloatArray) -> FloatArray:
     """``LabelReducer``'s rule on (voxels, classes): first maximum, background unless positive."""
     if not ids.size:
         return np.zeros(scores.shape[0], dtype=np.float32)
-    labels = ids[np.argmax(scores, axis=-1)]
-    labels[np.max(scores, axis=-1) <= 0] = 0
+    winners = np.argmax(scores, axis=-1)
+    labels = ids[winners]
+    labels[np.take_along_axis(scores, winners[:, None], axis=-1)[:, 0] <= 0] = 0
     return labels
 
 

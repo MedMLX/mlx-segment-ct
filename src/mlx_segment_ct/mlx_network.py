@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from math import prod
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -92,8 +92,7 @@ class FeatureModel:
         del pyramid
         for stage in range(4):
             prefix = f"image_encoder.{self.branch}.{stage}"
-            x = self.upsamples[stage](x)
-            x = x + skips.pop()
+            x = self.upsamples[stage](x, skip=skips.pop())
             x = self.residual(x, f"{prefix}.blocks.0")
             self.mx.async_eval(x)
         prefix = f"image_encoder.{self.branch}.3.head"
@@ -190,10 +189,27 @@ class AutomaticModel(FeatureModel):
 
     def class_logits(self, features: array, class_ids: Sequence[int] | None = None) -> array:
         """Apply the automatic class head to decoded features on their native spatial grid."""
+        features = self._class_features(features)
+        embedding = self.embedding if class_ids is None else self.embed_classes(class_ids)
+        return self._project_classes(features, embedding)
+
+    def logit_blocks(self, image: array) -> Iterator[array]:
+        """Emit successive class blocks so stitching can release each buffer after use."""
+        features = self._class_features(self.encode(image))
+        # Bound the projection output while retaining every class's full FP32 contraction.
+        block_size = 64
+        for start in range(0, self.embedding.shape[0], block_size):
+            yield self._project_classes(features, self.embedding[start : start + block_size])
+
+    def _class_features(self, features: array) -> array:
+        """Compute the two post-mapping blocks once for all class projections."""
         for index in range(2):
             features = self.image_mapping(features, f"class_head.image_post_mapping.{index}.layer")
             self.mx.async_eval(features)
-        embedding = self.embedding if class_ids is None else self.embed_classes(class_ids)
+        return features
+
+    def _project_classes(self, features: array, embedding: array) -> array:
+        """Project a contiguous run of class embeddings over the mapped window."""
         logits = embedding @ self.mx.reshape(features, (1, FEATURES, -1))
         return self.mx.reshape(logits, (1, embedding.shape[0], *features.shape[2:]))
 

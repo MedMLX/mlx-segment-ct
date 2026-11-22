@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -51,11 +51,14 @@ def automatic_case[ArrayT: ArrayValue](
     planes: list[HostArray] = []
     counts: list[HostArray] = []
 
-    def predict(patch: ArrayT, coordinates: PatchCoordinates) -> ArrayT:
+    def predict(patch: ArrayT, coordinates: PatchCoordinates) -> ArrayT | Iterator[ArrayT]:
         trace.extend(
             [[int(cast("int", part.start)) for part in coord[2:]] for coord in coordinates]
         )
-        return model(patch)
+        scores = model(patch)
+        if not reduce_labels:
+            return iter((cast("ArrayT", scores[:, :1]), cast("ArrayT", scores[:, 1:])))
+        return scores
 
     def finalize(plane: int, scores: HostArray, count: HostArray) -> None:
         assert plane == len(planes)
@@ -69,7 +72,7 @@ def automatic_case[ArrayT: ArrayValue](
         predict,
         data["class_ids"].tolist(),
         cast("Sequence[int]", data["roi"]),
-        weight=data["weight"],
+        weight=None if str(data["mode"]) == "constant" else data["weight"],
         finalized=finalize,
         mx=mx,
     )

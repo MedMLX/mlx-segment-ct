@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Buffer, Callable, Sequence
+from collections import deque
+from collections.abc import Buffer, Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from itertools import groupby, product
 from typing import cast
@@ -181,6 +182,7 @@ def stream_scores[ArrayT: ArrayValue](
     ``inputs`` is float32 ``(1, 1, X, Y, Z)``, edge-padded to at least ``roi_size``.
     Windows are placed with the given ``overlap`` fraction; scores are divided by
     the accumulated weight (``weight`` defaults to ones, i.e. constant blending).
+    A predictor can yield contiguous class blocks in ``class_ids`` order.
     With ``reduce_labels`` the result is float32 ``(1, 1, X, Y, Z)`` global labels
     cropped to the input size; otherwise ``None``. Raises ``ValueError`` for
     malformed inputs, a patch output of the wrong shape, non-finite scores, or
@@ -216,17 +218,30 @@ def stream_scores[ArrayT: ArrayValue](
         for pos in product(*starts)
     ]
     depth, channels = roi[0], len(class_ids)
-    scores = np.zeros((channels, depth, *padded[1:]), dtype=np.float32)
-    counts = np.zeros((depth, *padded[1:]), dtype=np.float32)
+    # Finalization visits one depth slot at a time. Keep each slot contiguous.
+    scores = np.zeros((depth, channels, *padded[1:]), dtype=np.float32)
+    counts = np.zeros((depth, *padded[1:]), dtype=np.float32) if weight is not None else None
     reducer = LabelReducer(class_ids, padded[1:]) if reduce_labels else None
     if reducer is None:
         _validate_class_ids(class_ids)
     labels = np.empty(padded, dtype=label_dtype(class_ids)) if reduce_labels else None
     rows_per_tile = min(padded[1], max(1, 32768 // padded[2]))
     invalid = False
-    weights = np.ones(roi, dtype=np.float32) if weight is None else np.asarray(weight)
-    if weights.shape != roi or weights.dtype != np.float32:
+    weights = None if weight is None else np.asarray(weight)
+    if weights is not None and (weights.shape != roi or weights.dtype != np.float32):
         raise ValueError("Rolling weights must be an FP32 ROI map")
+    # With unit weights the complete Cartesian patch grid gives separable
+    # coverage. Repeated FP32 additions of one saturate at 2**24.
+    coverage: list[HostArray] = []
+    transverse_coverage = np.empty((0, 0), dtype=np.int64)
+    if counts is None:
+        for size, patch, axis_starts in zip(padded, roi, starts, strict=True):
+            axis = np.zeros(size + 1, dtype=np.int64)
+            for start in axis_starts:
+                axis[start] += 1
+                axis[start + patch] -= 1
+            coverage.append(np.cumsum(axis[:-1]))
+        transverse_coverage = coverage[1][:, None] * coverage[2][None, :]
     groups = [
         (int(origin), list(patches)) for origin, patches in groupby(windows, lambda s: s[0].start)
     ]
@@ -237,14 +252,20 @@ def stream_scores[ArrayT: ArrayValue](
             streaming_axis=0,
             ring_depth=depth,
             predicted_accumulator_bytes=scores.nbytes,
-            count_buffer_bytes=counts.nbytes,
+            count_buffer_bytes=(
+                counts.nbytes
+                if counts is not None
+                else transverse_coverage.nbytes + sum(axis.nbytes for axis in coverage)
+            ),
             label_buffer_bytes=0 if labels is None else labels.nbytes,
             accumulator_dtype="float32",
         )
 
-    def accumulate(origin: int, spatial: tuple[slice, ...], prediction: HostArray) -> None:
-        """Accumulate a patch of scores and optional blending weights."""
-        if weight is not None:
+    def accumulate(
+        origin: int, spatial: tuple[slice, ...], classes: slice, prediction: HostArray
+    ) -> None:
+        """Accumulate one class block and count each patch's blend weights once."""
+        if weights is not None:
             # MONAI weights in the predictor dtype before FP32 accumulation.
             prediction = np.array(prediction)
             prediction *= weights
@@ -252,65 +273,92 @@ def stream_scores[ArrayT: ArrayValue](
         # from the device buffer without a copy or multiply.
         for source, target in ring_slices(origin, depth, depth):
             transverse = spatial[1:]
-            scores[(slice(None), target, *transverse)] += prediction[0, :, source]
-            counts[(target, *transverse)] += weights[source]
+            scores[(target, classes, *transverse)] += np.moveaxis(prediction[0, :, source], 0, 1)
+            if counts is not None and weights is not None and classes.start == 0:
+                counts[(target, *transverse)] += weights[source]
 
     def finish(origin: int, end: int) -> None:
         """Finalize completed score planes and track invalid values."""
         nonlocal invalid
         for plane in range(origin, end):
             slot = plane % depth
-            count = counts[slot]
-            invalid |= bool((count <= 0).any())
+            if counts is None:
+                count = np.minimum(coverage[0][plane] * transverse_coverage, 2**24).astype(
+                    np.float32
+                )
+            else:
+                count = counts[slot]
+                invalid |= bool((count <= 0).any())
+            scores_at_plane = scores[slot]
             with np.errstate(divide="ignore", invalid="ignore"):
-                scores[:, slot] /= count
+                scores_at_plane /= count
             reduced = None
             finite = None
             if reducer is not None and labels is not None:
                 # Reduction owns its finite-value state; this host worker owns
                 # coverage state. Wait below before either reuses the plane.
-                reduced = reduction.submit(reducer, scores[:, slot], labels[plane])
+                reduced = reduction.submit(reducer, scores_at_plane, labels[plane])
             else:
                 # Preserve overlap with restoration without computing its unused
                 # low-resolution labels. The host owns the returned invalid state.
-                finite = reduction.submit(_finite_plane, scores[:, slot], rows_per_tile)
+                finite = reduction.submit(_finite_plane, scores_at_plane, rows_per_tile)
             if finalized is not None:
-                finalized(plane, scores[:, slot], count)
+                finalized(plane, scores_at_plane, count)
             if reduced is not None:
                 reduced.result()
             if finite is not None:
                 invalid |= not finite.result()
-            scores[:, slot] = 0
-            count[:] = 0
+            # The last use of a slot needs no clearing before the ring is released.
+            if plane + depth < padded[0]:
+                scores_at_plane.fill(0)
+                if counts is not None:
+                    count.fill(0)
 
     # One host thread runs every accumulation and finished plane in submission
-    # order, which is the serial order, while the device predicts the next
-    # patch; MLX releases the GIL while it waits. Draining before each new
-    # patch keeps at most one finished prediction queued on the host.
-    queued: list[Future[None]] = []
+    # order, while the device predicts the next block and MLX releases the GIL.
+    queued: deque[Future[None]] = deque()
 
     def drain() -> None:
         """Finish queued asynchronous work before reusing its storage."""
-        for task in queued:
-            task.result()
-        queued.clear()
+        while queued:
+            queued.popleft().result()
 
     with ThreadPoolExecutor(max_workers=1) as host, ThreadPoolExecutor(max_workers=1) as reduction:
         for index, (origin, patches) in enumerate(groups):
             for spatial in patches:
                 coords = [slice(0, 1), slice(None), *spatial]
-                prediction = predictor(mx.array(raw[tuple(coords)]), [coords])
-                mx.eval(prediction)
-                if tuple(prediction.shape) != (1, channels, *roi):
+                output = predictor(mx.array(raw[tuple(coords)]), [coords])
+                blocks = output if isinstance(output, Iterator) else iter((output,))
+                del output
+                channel = 0
+                for prediction in blocks:
+                    shape = tuple(prediction.shape)
+                    if (
+                        len(shape) != 5
+                        or shape[0] != 1
+                        or shape[2:] != roi
+                        or not 0 < shape[1] <= channels - channel
+                    ):
+                        raise ValueError(
+                            "NV patch output does not match its admitted channel/spatial shape"
+                        )
+                    end_channel = channel + shape[1]
+                    mx.eval(prediction)
+                    # The queued read-only view owns the evaluated buffer until accumulation.
+                    values = np.asarray(memoryview(cast("Buffer", prediction)))
+                    # Two partial blocks may overlap stitching. Keep only one
+                    # queued result when the predictor emits a full window.
+                    queue_limit = 2 if shape[1] < channels else 1
+                    while len(queued) >= queue_limit:
+                        queued.popleft().result()
+                    classes = slice(channel, end_channel)
+                    queued.append(host.submit(accumulate, origin, spatial, classes, values))
+                    channel = end_channel
+                    del values, prediction
+                if channel != channels:
                     raise ValueError(
                         "NV patch output does not match its admitted channel/spatial shape"
                     )
-                # A read-only use of the evaluated buffer; the view keeps it alive.
-                values = np.asarray(memoryview(cast("Buffer", prediction)))
-                drain()
-                queued.append(host.submit(accumulate, origin, spatial, values))
-                # The queued view owns the buffer until accumulation finishes.
-                del values, prediction
             end = groups[index + 1][0] if index + 1 < len(groups) else padded[0]
             queued.append(host.submit(finish, origin, end))
         drain()
