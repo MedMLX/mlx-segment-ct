@@ -142,6 +142,18 @@ class HostArrays:
         return 0
 
     @staticmethod
+    def get_active_memory() -> int:
+        return 0
+
+    @staticmethod
+    def get_memory_limit() -> int:
+        return 0
+
+    @staticmethod
+    def set_memory_limit(_limit: int) -> int:
+        return 0
+
+    @staticmethod
     def reset_peak_memory() -> None:
         pass
 

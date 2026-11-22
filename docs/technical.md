@@ -1,5 +1,49 @@
 # Technical notes
 
+## Automatic CT and MRI inference
+
+The automatic runner projects up to 64 classes at a time. Above its resident
+MLX allocations, it allows space for four full-resolution, 48-channel FP32
+feature maps, or six when the classes span multiple projections. MLX can wait
+for queued work to finish when it reaches this limit. The runner respects a
+caller's lower limit and restores the previous setting after inference. Score
+restoration keeps each class plane contiguous and accumulates the eight
+neighboring scores in their original FP32 order.
+
+On the M1 Max (64 GB), the baseline was review commit `b23cc9c`. On the
+M5 Max (128 GB), the baseline in the table also included fused decoder
+upsampling and class-block stitching. The M5 rows measure the additional
+effects of the memory limit and score restoration.
+Each value is the median of six alternating fresh-process runs per variant on
+November 22, 2026, after one warm-up pair. Both Macs ran MLX 0.32.4 and NumPy
+2.5.4. Wall time includes starting Python and writing the NIfTI. Peak process
+footprint and peak MLX allocation use decimal GB.
+
+| Mac | Input | Wall time (s) | Inference and stitching (s) | Peak process footprint (GB) | Peak MLX allocation (GB) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| M1 Max | AMOS22 CT, 117 classes | 42.30 → 34.76 | 39.06 → 31.71 | 12.28 → 10.24 | 5.45 → 3.64 |
+| M1 Max | HCC_063 CT, 117 classes | 19.82 → 16.65 | 18.32 → 15.21 | 9.34 → 7.36 | 5.43 → 3.62 |
+| M1 Max | AMOS22 MRI, 50 classes | 18.53 → 16.30 | 17.43 → 15.27 | 12.05 → 7.37 | 10.03 → 5.22 |
+| M5 Max | AMOS22 CT, 117 classes | 22.73 → 20.87 | 20.40 → 18.61 | 12.43 → 10.41 | 5.45 → 3.64 |
+| M5 Max | HCC_063 CT, 117 classes | 11.39 → 10.55 | 10.18 → 9.34 | 9.50 → 7.52 | 5.43 → 3.66 |
+| M5 Max | AMOS22 MRI, 50 classes | 10.07 → 10.31 | 9.18 → 9.42 | 12.14 → 7.97 | 10.03 → 5.22 |
+
+For the M5 rows above, the 96.9% paired wall-time ratio intervals for
+HCC_063 (0.895–0.983) and MRI (0.873–1.060) overlap the 2% minimum-effect
+band. A separate M5 MRI comparison against review commit `b23cc9c` reduced
+wall time from 11.38 to 9.60 s (paired ratio 0.817–0.856), inference and
+stitching from 10.53 to 8.76 s, and peak process footprint from 12.21 to
+7.60 GB. Peak MLX allocation fell from 10.03 to 5.22 GB.
+
+Each CT produced 28 byte-identical compressed NIfTI masks across both Macs,
+and the MRI produced 42, including warm-ups. The HCC_063 liver and spleen
+prompt matched the review output with both score and bundle restoration.
+The liver point prompt also matched byte for byte.
+
+In a single M1 Max HCC_063 run per setting, four feature maps used 6.79 GB
+and took 18.12 s. Six used 7.36 GB and took 16.81 s. On MRI, the four-map
+setting saved 2.51 GB at a cost of 0.30 s in the same screen.
+
 ## Preprocessing: 1.5 mm resampling
 
 `Spacingd` resampling gathers trilinear corners from a float64 copy of the source

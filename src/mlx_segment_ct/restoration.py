@@ -34,7 +34,7 @@ _GATHER_VALUES = 1 << 22  # bounds each (voxels, classes) score gather
 
 @dataclass(frozen=True, slots=True)
 class _Plane:
-    values: FloatArray  # (Y, Z, classes), contiguous per voxel; uncovered voxels zeroed
+    values: FloatArray  # (classes, Y, Z), contiguous per class; uncovered voxels zeroed
     labels: FloatArray  # (Y, Z); NaN where uncovered
     covered: BoolArray  # (Y, Z)
     positive: BoolArray  # (classes,): positive somewhere in the plane
@@ -79,15 +79,20 @@ class ScoreRestorer:
         shape = self._grid.preprocessed_shape[1:]
         if scores.shape != (self._ids.size, *shape):
             raise ValueError("Restoration planes must be (classes, Y, Z) on the preprocessed grid")
-        # A contiguous channels-last copy: the caller's (possibly borrowed) view is not written.
-        channels_last = np.array(np.moveaxis(scores, 0, -1), dtype=np.float32, order="C")
-        covered = np.isfinite(channels_last).all(axis=-1)
-        values = channels_last
+        # The stream recycles its buffer after this call. Keep each class plane contiguous.
+        values = np.array(scores, dtype=np.float32, order="C", copy=True)
+        covered = np.isfinite(values).all(axis=0)
         if not covered.all():
-            values[~covered] = 0
-        labels = _decide(values.reshape(-1, self._ids.size), self._ids).reshape(shape)
+            values[:, ~covered] = 0
+        positive = np.max(values, axis=(1, 2), initial=0) > 0
+        labels = np.zeros(shape, dtype=np.float32)
+        best = np.zeros(shape, dtype=np.float32)
+        # Strict comparison preserves the first positive winner in prompt order.
+        for channel in np.flatnonzero(positive):
+            np.copyto(labels, self._ids[channel], where=values[channel] > best)
+            np.maximum(best, values[channel], out=best)
         labels[~covered] = np.nan
-        current = _Plane(values, labels, covered, np.max(values, axis=(0, 1), initial=0) > 0)
+        current = _Plane(values, labels, covered, positive)
         self._restore(index, self._previous, current)
         self._previous = current
         self._next += 1
@@ -197,8 +202,11 @@ class ScoreRestorer:
                 for dz in (0, 1):
                     uniform &= labels[dy : dy + rows, dz : dz + columns] == first
         active = np.flatnonzero(pair[0].positive | pair[1].positive)
+        # Each selected channel is a contiguous plane. Work with its flat spatial indices.
         values = tuple(
-            plane.values if active.size == self._ids.size else plane.values[..., active]
+            (plane.values if active.size == self._ids.size else plane.values[active]).reshape(
+                (active.size, plane.covered.size)
+            )
             for plane in pair
         )
         step = max(1, min(_CHUNK_VOXELS, _GATHER_VALUES // max(1, active.size)))
@@ -288,7 +296,8 @@ class ScoreRestorer:
         )
         ys = (_clip(y0, size_y), _clip(y0 + 1, size_y))
         zs = (_clip(z0, size_z), _clip(z0 + 1, size_z))
-        total = np.zeros((p0.size, ids.size), dtype=np.float32)
+        corners = tuple(tuple(y * size_z + z for z in zs) for y in ys)
+        total = np.zeros((ids.size, p0.size), dtype=np.float32)
         weight_sum = np.zeros(p0.size, dtype=np.float32)
         for dx, wx in ((0, 1 - fx), (1, fx)):
             for dy, wy in ((0, 1 - fy), (1, fy)):
@@ -296,16 +305,16 @@ class ScoreRestorer:
                     y, z = ys[dy], zs[dz]
                     usable = covered[dx][y, z]
                     weight = np.where(usable, wx * wy * wz, 0).astype(np.float32)
-                    # Advanced indexing owns this gather, so weighting can reuse it.
-                    weighted = values[dx][y, z]
-                    weighted *= weight[:, None]
+                    # The gather owns its output, so scale it in place.
+                    weighted = np.take(values[dx], corners[dy][dz], axis=1)
+                    weighted *= weight
                     total += weighted
                     del weighted
                     weight_sum += weight
         with np.errstate(divide="ignore", invalid="ignore"):
-            total /= weight_sum[:, None]
-        total[~nearest_covered] = 0
-        labels = _decide(total, ids)
+            total /= weight_sum
+        total[:, ~nearest_covered] = 0
+        labels = _decide(total.T, ids)
         return np.where(nearest_covered, labels, np.float32(np.nan)).astype(np.float32)
 
 

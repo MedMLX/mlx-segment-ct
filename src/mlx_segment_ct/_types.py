@@ -64,6 +64,15 @@ class ArrayBoundary[ArrayT](Protocol):
 
 
 class CoreRuntime(MlxRuntime, Protocol):
+    def get_active_memory(self) -> int:
+        """Return the bytes held by live MLX allocations."""
+        ...
+    def get_memory_limit(self) -> int:
+        """Return the process-wide MLX working-set limit in bytes."""
+        ...
+    def set_memory_limit(self, limit: int) -> int:
+        """Set the MLX working-set limit and return its previous value."""
+        ...
     def eval(self, *args: array | Mapping[str, array] | Sequence[array]) -> None:
         """Evaluate native arrays and their containers."""
         ...

@@ -12,6 +12,7 @@ import os
 import time
 from collections.abc import Callable, Iterator, Sequence
 from importlib.metadata import version
+from math import prod
 from numbers import Integral
 from pathlib import Path
 from threading import Lock
@@ -284,8 +285,7 @@ def _infer_and_publish(
     )
 
     mx = cast("CoreRuntime", import_mlx())
-    # The cache limit and peak counter are process-wide for MLX. Keep requests
-    # through this runner from changing either while another request uses them.
+    # MLX memory limits and the peak counter are shared by requests in this process.
     with _INFERENCE_LOCK:
         mx.synchronize()
         previous_limit = mx.set_cache_limit(_CACHE_LIMIT_BYTES)
@@ -545,7 +545,12 @@ def _segment(
     """
     from mlx_segment_ct.bundle_transforms import load_volume, preprocess, save_label_map
     from mlx_segment_ct.labels import class_ids_for_prompt, label_name
-    from mlx_segment_ct.mlx_network import AutomaticModel, required_shapes
+    from mlx_segment_ct.mlx_network import (
+        CLASS_BLOCK_SIZE,
+        FEATURES,
+        AutomaticModel,
+        required_shapes,
+    )
     from mlx_segment_ct.restoration import ScoreRestorer
     from mlx_segment_ct.streaming import rolling_logits, stream_scores
 
@@ -577,7 +582,14 @@ def _segment(
         ScoreRestorer(prepared.restoration_grid(), class_ids) if restoration == "scores" else None
     )
     finalized = None if restorer is None else _restoring(restorer, inputs.shape[2:], roi_size)
+    # MLX can finish queued work before allocating the next activation. Multi-block
+    # projections leave a second score block with the host stitcher.
+    feature_bytes = FEATURES * prod(roi_size) * np.dtype(np.float32).itemsize
+    window_buffers = 6 if len(class_ids) > CLASS_BLOCK_SIZE else 4
+    caller_limit = mx.get_memory_limit()
+    budget = mx.get_active_memory() + window_buffers * feature_bytes
     tick = time.perf_counter()
+    mx.set_memory_limit(min(caller_limit, budget))
     try:
         if restorer is None:
             labels = rolling_logits(inputs, predict, class_ids, roi_size, metrics=metrics)
@@ -589,6 +601,8 @@ def _segment(
         raise ModelExecutionError(str(exc)) from exc
     except RuntimeError as exc:
         raise ModelExecutionError(f"{_NETWORK_FAILURE}: {exc}") from exc
+    finally:
+        mx.set_memory_limit(caller_limit)
     inference_seconds = time.perf_counter() - tick
     tick = time.perf_counter()
     if restorer is None:

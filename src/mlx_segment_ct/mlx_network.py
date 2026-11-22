@@ -22,6 +22,7 @@ from mlx_segment_ct.projections import Projections
 
 BLOCKS_DOWN = (1, 2, 2, 4, 4)
 FEATURES = 48
+CLASS_BLOCK_SIZE = 64
 
 
 class FeatureModel:
@@ -197,9 +198,8 @@ class AutomaticModel(FeatureModel):
         """Emit successive class blocks so stitching can release each buffer after use."""
         features = self._class_features(self.encode(image))
         # Bound the projection output while retaining every class's full FP32 contraction.
-        block_size = 64
-        for start in range(0, self.embedding.shape[0], block_size):
-            yield self._project_classes(features, self.embedding[start : start + block_size])
+        for start in range(0, self.embedding.shape[0], CLASS_BLOCK_SIZE):
+            yield self._project_classes(features, self.embedding[start : start + CLASS_BLOCK_SIZE])
 
     def _class_features(self, features: array) -> array:
         """Compute the two post-mapping blocks once for all class projections."""

@@ -15,16 +15,18 @@ Segment CT anatomy automatically or with anatomy names and clicks, using NVIDIA 
 
 <img src="https://raw.githubusercontent.com/MedMLX/mlx-segment-ct/main/docs/showcase.webp" alt="VISTA-3D CT segmentation with rotating 3D anatomy and axial slices" width="100%">
 
+<sub>AMOS22 abdominal CT with VISTA-3D labels. Showcase image shared under CC BY-SA 4.0.</sub>
+
 </div>
 
 | Input | Output |
 | :--- | :--- |
-| 3D CT · NIfTI | Anatomical labels on the input grid |
+| 3D CT or MRI · NIfTI | Anatomical labels on the input grid |
 
 | Model | Weights download | Peak MLX memory | Measured on |
 | :--- | ---: | ---: | :--- |
-| `mlx-segment-ct` | 872 MB | 5.4 GB | Apple M1 Max, all classes of AMOS22 `amos_0008` (768×768×101 abdominal CT) |
-| `mlx-segment-ctmr` | 872 MB | 10.0 GB | Apple M1 Max, all classes of AMOS22 `amos_0544` (576×468×72 abdominal MRI) |
+| `mlx-segment-ct` | 872 MB | 3.6 GB | Apple M1 Max, all classes of AMOS22 `amos_0008` (768×768×101 abdominal CT) |
+| `mlx-segment-ctmr` | 872 MB | 5.2 GB | Apple M1 Max, all classes of AMOS22 `amos_0544` (576×468×72 abdominal MRI) |
 
 ## Install
 
