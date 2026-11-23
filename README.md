@@ -60,8 +60,7 @@ preprocessed foreground crop. `1` includes a point; `0` excludes it.
 | `mlx-segment-ct` | [`MedMLX/vista3d-ct-mlx`](https://huggingface.co/MedMLX/vista3d-ct-mlx) | Automatic, named and point segmentation of CT |
 | `mlx-segment-ctmr` | [`MedMLX/vista3d-ctmr-mlx`](https://huggingface.co/MedMLX/vista3d-ctmr-mlx) | CT and MRI under noncommercial terms; NVIDIA does not support point segmentation with this checkpoint |
 
-Omitting `weights_path` downloads the model's weights into the shared MedMLX cache on
-first use; with MedMLX installed, `medmlx setup <model>` downloads them ahead of time.
+Weights download on first use; `medmlx setup <model>` downloads them ahead of time.
 A local weights folder holds `automatic.safetensors` and `correction.safetensors`.
 `model` selects the checkpoint's preprocessing, labels and weights; a supplied
 `weights_path` must hold that model's files.
@@ -81,10 +80,10 @@ A local weights folder holds `automatic.safetensors` and `correction.safetensors
 | `interactive` | Require point mode; clicks select it anyway |
 | `modality` | CTMR all-classes set without prompts: `"MRI_BODY"` (default), `"CT_BODY"` or `"MRI_BRAIN"` |
 | `restoration` | `"scores"` (default) or `"bundle"` (see below) |
-| `overwrite` | `False` by default; an existing mask is never replaced |
+| `overwrite` | `False` by default; an existing mask is replaced only when `True` |
 
-- **Input:** voxels must be finite. Spatial units must be millimetres or unknown
-  (assumed millimetres); files marked in metres or microns are rejected.
+- **Input:** voxels must be finite. Spatial units must be millimeters or unknown
+  (assumed millimeters); files marked in meters or microns are rejected.
 - **Mask:** float32 global labels with the source shape and affine, in a new NIfTI
   header. Voxels no window covered are 255.
 - **Return value:** `{"outputs": {"mask": path}, "artifacts": {"mask": ...}, "details": {...}}`.
@@ -191,7 +190,6 @@ labels = interactive_labels(logits, request)
   `interactive_logits` also takes `previous_logits` and `point_start`.
 - `automatic_logits` returns full automatic scores; `rolling_logits` holds only an
   axis-0 ring of them.
-- Inference requires Apple Silicon with Metal.
 
 ## Use with MedMLX
 
