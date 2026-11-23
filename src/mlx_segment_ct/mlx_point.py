@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from mlx_segment_ct._types import CoreRuntime
+from medmlx_core.typing import MlxRuntime
 
 if TYPE_CHECKING:
     from mlx.core import array
@@ -20,7 +20,7 @@ class PointModel(FeatureModel):
     ``up_layers`` weights. Output logits are for a single object.
     """
 
-    def __init__(self, weights: dict[str, array], *, mx: CoreRuntime):
+    def __init__(self, weights: dict[str, array], *, mx: MlxRuntime):
         """Initialize the native point-conditioned correction network."""
         super().__init__(weights, mx=mx, branch="up_layers")
         self.output_upsample = AutomaticUpsample(

@@ -10,15 +10,18 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from importlib.metadata import version
+from math import prod
 from numbers import Integral
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, cast, overload
+
+from medmlx_core.typing import MlxRuntime
 
 from mlx_segment_ct._types import (
     Checkpoint,
-    CoreRuntime,
     Details,
     HostArray,
     Metrics,
@@ -28,6 +31,7 @@ from mlx_segment_ct._types import (
     PublishedDetails,
     Restoration,
     RollingMetrics,
+    RollingMetricsBuilder,
     RunResult,
 )
 
@@ -38,7 +42,7 @@ import numpy as np
 from medmlx_core.errors import AssetNotReadyError, InvalidInputError, ModelExecutionError
 from medmlx_core.files import output_targets, publish
 from medmlx_core.outputs import artifact
-from medmlx_core.weights import model_folder, weights_revision
+from medmlx_core.weights import weights_file, weights_revision
 
 from mlx_segment_ct.labels import CT_RULES, InteractivePrompt, LabelRules, Prompt, label_rules
 
@@ -85,6 +89,8 @@ SOURCE_REVISION = "f9f5f51b589e5dc9c23c453cf5138398e4084056"
 ROI_SIZE = (128, 128, 128)
 CTMR_ROI_SIZE = (192, 192, 128)
 WARNING = "Model output requires human review and is not ground truth."
+_CACHE_LIMIT_BYTES = 1 << 30
+_INFERENCE_LOCK = Lock()
 _NETWORK_FAILURE = (
     "NV-Segment-CT MLX network failed; its ordered FP32 kernels need Apple Silicon Metal"
 )
@@ -236,7 +242,10 @@ def run(
     destination = output_targets(
         output_dir, {"mask": MASK_FILENAME}, overwrite=overwrite, inputs=sources
     )["mask"]
-    weights_dir = _weights_dir(model_folder(model, weights_path), correction=point_mode)
+    automatic_file = weights_file(model, weights_path, AUTOMATIC_WEIGHTS)
+    if point_mode:
+        weights_file(model, weights_path, CORRECTION_WEIGHTS)
+    weights_dir = automatic_file.parent
     return _infer_and_publish(
         weights_dir,
         image_file,
@@ -279,25 +288,35 @@ def _infer_and_publish(
         mlx_default_device_name,
     )
 
-    mx = cast("CoreRuntime", import_mlx())
-    mx.synchronize()
-    mx.reset_peak_memory()
-    if isinstance(plan, InteractivePrompt):
-        details = _interactive(
-            mx,
-            weights_dir,
-            image_file,
-            destination,
-            plan,
-            previous_file=previous_file,
-            point_start=point_start,
-            restoration=restoration,
-        )
-    else:
-        details = _segment(
-            mx, weights_dir, image_file, destination, plan, modality, restoration=restoration
-        )
-    mx.synchronize()
+    mx = cast("MlxRuntime", import_mlx())
+    # MLX memory limits and the peak counter are shared by requests in this process.
+    with _INFERENCE_LOCK:
+        mx.synchronize()
+        previous_limit = mx.set_cache_limit(_CACHE_LIMIT_BYTES)
+        try:
+            if previous_limit < _CACHE_LIMIT_BYTES:
+                mx.set_cache_limit(previous_limit)
+            mx.reset_peak_memory()
+            if isinstance(plan, InteractivePrompt):
+                details = _interactive(
+                    mx,
+                    weights_dir,
+                    image_file,
+                    destination,
+                    plan,
+                    previous_file=previous_file,
+                    point_start=point_start,
+                    restoration=restoration,
+                )
+            else:
+                details = _segment(
+                    mx, weights_dir, image_file, destination, plan, modality,
+                    restoration=restoration,
+                )
+            mx.synchronize()
+            peak_memory = mx.get_peak_memory()
+        finally:
+            mx.set_cache_limit(previous_limit)
     details.update(
         weights_revision=weights_revision(weights_dir),
         checkpoint=plan.rules.checkpoint,
@@ -307,7 +326,7 @@ def _infer_and_publish(
         mlx_default_device=mlx_default_device_name(mx),
         precision="float32",
         source_revision=SOURCE_REVISION,
-        mlx_peak_memory_bytes=mx.get_peak_memory(),
+        mlx_peak_memory_bytes=peak_memory,
         elapsed_seconds=round(time.perf_counter() - started, 6),
         warning=WARNING,
     )
@@ -387,7 +406,7 @@ def resolve_interactive_request(
 
 
 def _interactive(
-    mx: CoreRuntime,
+    mx: MlxRuntime,
     weights_dir: Path,
     image_file: Path,
     destination: Path,
@@ -514,7 +533,7 @@ def _interactive(
 
 
 def _segment(
-    mx: CoreRuntime,
+    mx: MlxRuntime,
     weights_dir: Path,
     image_file: Path,
     destination: Path,
@@ -530,7 +549,12 @@ def _segment(
     """
     from mlx_segment_ct.bundle_transforms import load_volume, preprocess, save_label_map
     from mlx_segment_ct.labels import class_ids_for_prompt, label_name
-    from mlx_segment_ct.mlx_network import AutomaticModel, required_shapes
+    from mlx_segment_ct.mlx_network import (
+        CLASS_BLOCK_SIZE,
+        FEATURES,
+        AutomaticModel,
+        required_shapes,
+    )
     from mlx_segment_ct.restoration import ScoreRestorer
     from mlx_segment_ct.streaming import rolling_logits, stream_scores
 
@@ -546,25 +570,30 @@ def _segment(
         raise ModelExecutionError(f"{_NETWORK_FAILURE}: {exc}") from exc
     volume, affine = load_volume(image_file)
     prepared = preprocess(volume, affine, intensity=intensity)
+    del volume
     inputs = prepared.image[None]
-    metrics: Metrics = {"patch_seconds": []}
+    metrics: RollingMetricsBuilder = {}
+    patch_count = 0
     load_seconds = time.perf_counter() - tick
 
-    def predict(patch: array, coordinates: PatchCoordinates) -> array:
-        """Run and time one automatic segmentation patch on the native runtime."""
-        mx.synchronize()
-        start = time.perf_counter()
-        logits = model(patch)
-        mx.eval(logits)
-        mx.synchronize()
-        metrics["patch_seconds"].append(time.perf_counter() - start)
-        return logits
+    def predict(patch: array, coordinates: PatchCoordinates) -> Iterator[array]:
+        """Build the class projections for one patch in class-ID order."""
+        nonlocal patch_count
+        patch_count += 1
+        return model.logit_blocks(patch)
 
     restorer = (
         ScoreRestorer(prepared.restoration_grid(), class_ids) if restoration == "scores" else None
     )
     finalized = None if restorer is None else _restoring(restorer, inputs.shape[2:], roi_size)
+    # MLX can finish queued work before allocating the next activation. Multi-block
+    # projections leave a second score block with the host stitcher.
+    feature_bytes = FEATURES * prod(roi_size) * np.dtype(np.float32).itemsize
+    window_buffers = 6 if len(class_ids) > CLASS_BLOCK_SIZE else 4
+    caller_limit = mx.get_memory_limit()
+    budget = mx.get_active_memory() + window_buffers * feature_bytes
     tick = time.perf_counter()
+    mx.set_memory_limit(min(caller_limit, budget))
     try:
         if restorer is None:
             labels = rolling_logits(inputs, predict, class_ids, roi_size, metrics=metrics)
@@ -576,6 +605,8 @@ def _segment(
         raise ModelExecutionError(str(exc)) from exc
     except RuntimeError as exc:
         raise ModelExecutionError(f"{_NETWORK_FAILURE}: {exc}") from exc
+    finally:
+        mx.set_memory_limit(caller_limit)
     inference_seconds = time.perf_counter() - tick
     tick = time.perf_counter()
     if restorer is None:
@@ -585,7 +616,7 @@ def _segment(
         restored, restored_affine = restorer.finish()
     # Streaming raises on missing coverage, so NaN is not expected here. Any that remains
     # becomes 255 and fails validation unless 255 is a selected class.
-    restored = np.nan_to_num(restored, nan=255.0)
+    np.copyto(restored, np.float32(255), where=np.isnan(restored))
     validate_labels(restored, class_ids)
     publish({destination: lambda path: save_label_map(path, restored, restored_affine)})
     values = set(class_ids) | {0}
@@ -606,7 +637,7 @@ def _segment(
         "blend_mode": "constant",
         "padding_mode": "replicate",
         "padded_shape": cast("RollingMetrics", metrics)["padded_shape"],
-        "patch_count": len(metrics["patch_seconds"]),
+        "patch_count": patch_count,
         "load_preprocess_seconds": round(load_seconds, 6),
         "inference_stitch_seconds": round(inference_seconds, 6),
         "restore_save_seconds": round(time.perf_counter() - tick, 6),
@@ -762,27 +793,7 @@ def _nifti_file(value: str | os.PathLike[str], name: str) -> Path:
     return path
 
 
-def _weights_dir(value: str | os.PathLike[str], *, correction: bool) -> Path:
-    """Validate a model folder and the files needed for the requested mode."""
-    directory = Path(value).expanduser()
-    if not directory.is_dir():
-        raise AssetNotReadyError(
-            f"NV-Segment-CT weights directory not found: {directory}",
-            reason=f"missing {directory}",
-            hint=_WEIGHTS_HINT,
-        )
-    required = (AUTOMATIC_WEIGHTS, CORRECTION_WEIGHTS) if correction else (AUTOMATIC_WEIGHTS,)
-    missing = [name for name in required if not (directory / name).is_file()]
-    if missing:
-        raise AssetNotReadyError(
-            f"NV-Segment-CT weights directory {directory} is missing " + ", ".join(missing),
-            reason="missing " + ", ".join(missing),
-            hint=_WEIGHTS_HINT,
-        )
-    return directory
-
-
-def _read_safetensors(mx: CoreRuntime, path: Path) -> dict[str, array]:
+def _read_safetensors(mx: MlxRuntime, path: Path) -> dict[str, array]:
     """Load a named native checkpoint mapping or report an asset error."""
     try:
         raw = mx.load(str(path))
@@ -802,7 +813,7 @@ def _read_safetensors(mx: CoreRuntime, path: Path) -> dict[str, array]:
 
 
 def _check_tensors(
-    mx: CoreRuntime, path: Path, tensors: dict[str, array], shapes: dict[str, tuple[int, ...]]
+    mx: MlxRuntime, path: Path, tensors: dict[str, array], shapes: dict[str, tuple[int, ...]]
 ) -> None:
     """Validate required tensor shapes and float32 dtypes in a checkpoint."""
     missing = sorted(shapes.keys() - tensors.keys())
@@ -824,7 +835,7 @@ def _check_tensors(
 
 
 def load_weights(
-    mx: CoreRuntime, path: Path, shapes: dict[str, tuple[int, ...]]
+    mx: MlxRuntime, path: Path, shapes: dict[str, tuple[int, ...]]
 ) -> dict[str, array]:
     """Load exactly the automatic graph, FP32.
 
@@ -846,7 +857,7 @@ def load_weights(
 
 
 def _load_point_weights(
-    mx: CoreRuntime, directory: Path, *, include_automatic: bool = False
+    mx: MlxRuntime, directory: Path, *, include_automatic: bool = False
 ) -> dict[str, array]:
     """Admit one encoder and the requested decoders, reading each checkpoint once."""
     from mlx_segment_ct.mlx_network import required_shapes
@@ -888,10 +899,14 @@ def validate_labels(labels: HostArray, class_ids: Sequence[int]) -> None:
     # Lookup table over global IDs 0-511; 511 is the largest NV-Segment-CTMR prompt ID.
     legal = np.zeros(512, dtype=bool)
     legal[[0, *class_ids]] = True
-    invalid = not np.isfinite(labels).all() or bool(
-        ((labels < 0) | (labels > 511) | (labels != np.floor(labels))).any()
+    # Visit masks in storage order, with bounded buffers even for transposed images.
+    tiles = np.nditer(
+        labels, flags=["external_loop", "buffered", "zerosize_ok"], buffersize=1 << 20
     )
-    if not invalid:
-        invalid = bool((~legal[np.clip(labels.astype(np.int64), 0, 511)]).any())
-    if invalid:
-        raise ModelExecutionError("NV restored mask contains invalid or non-anatomical labels")
+    for tile in cast("Iterator[HostArray]", tiles):
+        if (
+            not np.isfinite(tile).all()
+            or ((tile < 0) | (tile > 511) | (tile != np.floor(tile))).any()
+            or not legal[tile.astype(np.uint16)].all()
+        ):
+            raise ModelExecutionError("NV restored mask contains invalid or non-anatomical labels")

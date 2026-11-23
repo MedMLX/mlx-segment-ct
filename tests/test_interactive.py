@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Unpack, cast
 
 import numpy as np
 import pytest
+from medmlx_core.typing import MlxRuntime
 from reference_support import (
     HostArrays,
     assert_restored,
@@ -28,7 +29,6 @@ from mlx_segment_ct import (
     transform_points,
 )
 from mlx_segment_ct._types import (
-    CoreRuntime,
     HostArray,
     JointPredictor,
     Metrics,
@@ -257,7 +257,7 @@ def test_runner_matches_bundle_nifti_geometry_and_labels(
 
 
 @pytest.mark.parametrize("target", (None, 26, 133))
-def test_seeded_mlx_point_decoder_against_monai(target: int | None, mx: CoreRuntime) -> None:
+def test_seeded_mlx_point_decoder_against_monai(target: int | None, mx: MlxRuntime) -> None:
     """Compare a seeded native point decoder with the MONAI reference."""
     from mlx_segment_ct.correction import normalized_point_positions
     from mlx_segment_ct.mlx_point import PointModel, correction_shapes

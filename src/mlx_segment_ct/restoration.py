@@ -20,7 +20,7 @@ is outside the grid is background and one whose nearest neighbor is uncovered is
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -34,7 +34,7 @@ _GATHER_VALUES = 1 << 22  # bounds each (voxels, classes) score gather
 
 @dataclass(frozen=True, slots=True)
 class _Plane:
-    values: FloatArray  # (Y, Z, classes), contiguous per voxel; uncovered voxels zeroed
+    values: FloatArray  # (classes, Y, Z), contiguous per class; uncovered voxels zeroed
     labels: FloatArray  # (Y, Z); NaN where uncovered
     covered: BoolArray  # (Y, Z)
     positive: BoolArray  # (classes,): positive somewhere in the plane
@@ -42,9 +42,10 @@ class _Plane:
 
 @dataclass(frozen=True, slots=True)
 class _AxisBuckets:
-    axes: tuple[IntArray, IntArray, IntArray]  # source indices with in-grid nearest neighbors
-    plane_axis: int  # source axis that drives preprocessed axis 0
-    plane_buckets: IntArray  # floor(p0) + 1 for the retained indices on plane_axis
+    axes: tuple[IntArray, IntArray, IntArray]  # source indices in preprocessed axis order
+    positions: tuple[HostArray, HostArray, HostArray]  # corresponding preprocessed positions
+    source_axes: tuple[int, ...]  # source axis driving each preprocessed axis
+    plane_buckets: IntArray  # floor(p0) + 1 in axes[0] order
     offsets: IntArray
 
 
@@ -78,15 +79,20 @@ class ScoreRestorer:
         shape = self._grid.preprocessed_shape[1:]
         if scores.shape != (self._ids.size, *shape):
             raise ValueError("Restoration planes must be (classes, Y, Z) on the preprocessed grid")
-        # A contiguous channels-last copy: the caller's (possibly borrowed) view is not written.
-        channels_last = np.array(np.moveaxis(scores, 0, -1), dtype=np.float32, order="C")
-        covered = np.isfinite(channels_last).all(axis=-1)
-        values = channels_last
+        # The stream recycles its buffer after this call. Keep each class plane contiguous.
+        values = np.array(scores, dtype=np.float32, order="C", copy=True)
+        covered = np.isfinite(values).all(axis=0)
         if not covered.all():
-            values[~covered] = 0
-        labels = _decide(values.reshape(-1, self._ids.size), self._ids).reshape(shape)
+            values[:, ~covered] = 0
+        positive = np.max(values, axis=(1, 2), initial=0) > 0
+        labels = np.zeros(shape, dtype=np.float32)
+        best = np.zeros(shape, dtype=np.float32)
+        # Strict comparison preserves the first positive winner in prompt order.
+        for channel in np.flatnonzero(positive):
+            np.copyto(labels, self._ids[channel], where=values[channel] > best)
+            np.maximum(best, values[channel], out=best)
         labels[~covered] = np.nan
-        current = _Plane(values, labels, covered, (values > 0).any(axis=(0, 1)))
+        current = _Plane(values, labels, covered, positive)
         self._restore(index, self._previous, current)
         self._previous = current
         self._next += 1
@@ -119,29 +125,30 @@ class ScoreRestorer:
             )
         ):
             return None
-        source_axes = np.argmax(linear, axis=1)
-        axes: list[IntArray] = [np.arange(size, dtype=np.int64) for size in grid.source_shape]
-        plane_buckets = np.empty(0, dtype=np.int64)
-        for row, value in enumerate(source_axes):
-            source_axis = int(value)
-            varying = axes[source_axis]
+        source_axes = tuple(int(axis) for axis in np.argmax(linear, axis=1))
+        axes: list[IntArray] = []
+        positions: list[HostArray] = []
+        for row, source_axis in enumerate(source_axes):
+            varying = np.arange(grid.source_shape[source_axis], dtype=np.int64)
             indices = [np.zeros(varying.size, dtype=np.int64) for _ in range(3)]
             indices[source_axis] = varying
             # Use the grid's Torch-compatible arithmetic, including axis-map rounding.
             position = grid.coordinates(*indices)[row]
             nearest = np.rint(position)
             inside = (nearest >= 0) & (nearest < grid.preprocessed_shape[row])
-            axes[source_axis] = varying[inside]
-            if row == 0:
-                plane_buckets = (np.floor(position[inside]) + 1).astype(np.int64)
-        plane_axis = int(source_axes[0])
+            axes.append(varying[inside])
+            positions.append(position[inside])
+        plane_buckets = np.floor(positions[0]).astype(np.int64) + 1
         counts = np.bincount(plane_buckets, minlength=self._planes + 2)
-        other_voxels = int(
-            np.prod([axis.size for index, axis in enumerate(axes) if index != plane_axis])
-        )
-        counts *= other_voxels
+        counts *= axes[1].size * axes[2].size
         offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
-        return _AxisBuckets((axes[0], axes[1], axes[2]), plane_axis, plane_buckets, offsets)
+        return _AxisBuckets(
+            (axes[0], axes[1], axes[2]),
+            (positions[0], positions[1], positions[2]),
+            source_axes,
+            plane_buckets,
+            offsets,
+        )
 
     def _buckets(self) -> tuple[HostArray, IntArray]:
         """Source voxel indices sorted by bucket ``floor(p0) + 1``, and bucket offsets.
@@ -178,29 +185,6 @@ class ScoreRestorer:
             cursor += chunk_counts
         return order, offsets
 
-    def _indices(self, bucket: int, step: int) -> Iterator[IntArray]:
-        """Yield each bucket in source-flat order without a volume-sized separable index array."""
-        if self._axis_buckets is None:
-            assert self._order is not None
-            indices = self._order[self._offsets[bucket] : self._offsets[bucket + 1]]
-            for start in range(0, indices.size, step):
-                yield indices[start : start + step].astype(np.int64, copy=False)
-            return
-        axis_buckets = self._axis_buckets
-        axes = list(axis_buckets.axes)
-        axis = axis_buckets.plane_axis
-        axes[axis] = axes[axis][axis_buckets.plane_buckets == bucket]
-        d, h, w = axes
-        shape = (d.size, h.size, w.size)
-        total = int(np.prod(shape))
-        for start in range(0, total, step):
-            di, hi, wi = _unravel(np.arange(start, min(total, start + step)), shape)
-            flat = (
-                (d[di] * self._grid.source_shape[1] + h[hi]) * self._grid.source_shape[2] + w[wi]
-            )
-            del di, hi, wi
-            yield flat
-
     def _restore(self, bucket: int, lower: _Plane | None, upper: _Plane | None) -> None:
         """Restore the voxels between preprocessed planes ``bucket - 1`` and ``bucket``."""
         if self._offsets[bucket] == self._offsets[bucket + 1]:
@@ -218,26 +202,76 @@ class ScoreRestorer:
                 for dz in (0, 1):
                     uniform &= labels[dy : dy + rows, dz : dz + columns] == first
         active = np.flatnonzero(pair[0].positive | pair[1].positive)
+        # Each selected channel is a contiguous plane. Work with its flat spatial indices.
         values = tuple(
-            plane.values if active.size == self._ids.size else plane.values[..., active]
+            (plane.values if active.size == self._ids.size else plane.values[active]).reshape(
+                (active.size, plane.covered.size)
+            )
             for plane in pair
         )
         step = max(1, min(_CHUNK_VOXELS, _GATHER_VALUES // max(1, active.size)))
+
+        def interpolate(p0: HostArray, p1: HostArray, p2: HostArray) -> FloatArray:
+            return self._mixed(
+                bucket - 1,
+                (p0, p1, p2),
+                (pair[0].covered, pair[1].covered),
+                (values[0], values[1]),
+                self._ids[active],
+            )
+
+        if self._axis_buckets is not None:
+            self._restore_separable(bucket, self._axis_buckets, uniform, first, step, interpolate)
+            return
+
+        assert self._order is not None
+        indices = self._order[self._offsets[bucket] : self._offsets[bucket + 1]]
         output = self._output.reshape(-1)
-        for flat in self._indices(bucket, step):
+        for start in range(0, indices.size, step):
+            flat = indices[start : start + step].astype(np.int64, copy=False)
             p0, p1, p2 = self._grid.coordinates(*_unravel(flat, self._grid.source_shape))
             cell = (np.floor(p1).astype(np.int64) + 1, np.floor(p2).astype(np.int64) + 1)
             result = np.where(uniform[cell], first[cell], np.float32(0)).astype(np.float32)
             mixed = np.flatnonzero(~uniform[cell])
             if mixed.size:
-                result[mixed] = self._mixed(
-                    bucket - 1,
-                    (p0[mixed], p1[mixed], p2[mixed]),
-                    (pair[0].covered, pair[1].covered),
-                    (values[0], values[1]),
-                    self._ids[active],
-                )
+                result[mixed] = interpolate(p0[mixed], p1[mixed], p2[mixed])
             output[flat] = result
+
+    def _restore_separable(
+        self,
+        bucket: int,
+        axes: _AxisBuckets,
+        uniform: BoolArray,
+        first: FloatArray,
+        step: int,
+        interpolate: Callable[[HostArray, HostArray, HostArray], FloatArray],
+    ) -> None:
+        """Map each transverse cell once for all source planes enclosed by this bucket."""
+        selected = axes.plane_buckets == bucket
+        px, py, pz = axes.positions
+        dx, dy, dz = axes.axes
+        jy = np.floor(py).astype(np.int64) + 1
+        jz = np.floor(pz).astype(np.int64) + 1
+        output = self._output.transpose(axes.source_axes)
+        # Bound the 2D map on wide source grids independently of the score gathers.
+        width = min(jz.size, _CHUNK_VOXELS)
+        height = _CHUNK_VOXELS // width
+        for y_start in range(0, jy.size, height):
+            y = slice(y_start, y_start + height)
+            for z_start in range(0, jz.size, width):
+                z = slice(z_start, z_start + width)
+                cell = jy[y, None], jz[None, z]
+                result = first[cell]
+                mixed_y, mixed_z = np.nonzero(~uniform[cell])
+                mixed_py, mixed_pz = py[y][mixed_y], pz[z][mixed_z]
+                for dest, position in zip(dx[selected], px[selected], strict=True):
+                    for start in range(0, mixed_y.size, step):
+                        subset = slice(start, start + step)
+                        mixed_px = np.full(mixed_py[subset].size, position, dtype=px.dtype)
+                        result[mixed_y[subset], mixed_z[subset]] = interpolate(
+                            mixed_px, mixed_py[subset], mixed_pz[subset]
+                        )
+                    output[dest, dy[y, None], dz[None, z]] = result
 
     def _mixed(
         self,
@@ -252,29 +286,35 @@ class ScoreRestorer:
         p0, p1, p2 = coords
         y0, z0 = np.floor(p1).astype(np.int64), np.floor(p2).astype(np.int64)
         fx, fy, fz = p0 - lower_index, p1 - y0, p2 - z0
-        # The neighbor nearest restoration rounds to (half to even on absolute indices).
-        nearest = (
-            np.rint(p0).astype(np.int64) - lower_index,
-            np.rint(p1).astype(np.int64) - y0,
-            np.rint(p2).astype(np.int64) - z0,
+        # Round absolute coordinates to even, independently of the interpolation.
+        nearest_y = _clip(np.rint(p1).astype(np.int64), size_y)
+        nearest_z = _clip(np.rint(p2).astype(np.int64), size_z)
+        nearest_covered = np.where(
+            np.rint(p0) == lower_index,
+            covered[0][nearest_y, nearest_z],
+            covered[1][nearest_y, nearest_z],
         )
-        total = np.zeros((p0.size, ids.size), dtype=np.float32)
+        ys = (_clip(y0, size_y), _clip(y0 + 1, size_y))
+        zs = (_clip(z0, size_z), _clip(z0 + 1, size_z))
+        corners = tuple(tuple(y * size_z + z for z in zs) for y in ys)
+        total = np.zeros((ids.size, p0.size), dtype=np.float32)
         weight_sum = np.zeros(p0.size, dtype=np.float32)
-        nearest_covered = np.zeros(p0.size, dtype=bool)
         for dx, wx in ((0, 1 - fx), (1, fx)):
             for dy, wy in ((0, 1 - fy), (1, fy)):
                 for dz, wz in ((0, 1 - fz), (1, fz)):
-                    y, z = _clip(y0 + dy, size_y), _clip(z0 + dz, size_z)
+                    y, z = ys[dy], zs[dz]
                     usable = covered[dx][y, z]
-                    is_nearest = (nearest[0] == dx) & (nearest[1] == dy) & (nearest[2] == dz)
-                    nearest_covered |= is_nearest & usable
                     weight = np.where(usable, wx * wy * wz, 0).astype(np.float32)
-                    total += values[dx][y, z] * weight[:, None]
+                    # The gather owns its output, so scale it in place.
+                    weighted = np.take(values[dx], corners[dy][dz], axis=1)
+                    weighted *= weight
+                    total += weighted
+                    del weighted
                     weight_sum += weight
         with np.errstate(divide="ignore", invalid="ignore"):
-            scores = total / weight_sum[:, None]
-        scores[~nearest_covered] = 0
-        labels = _decide(scores, ids)
+            total /= weight_sum
+        total[:, ~nearest_covered] = 0
+        labels = _decide(total.T, ids)
         return np.where(nearest_covered, labels, np.float32(np.nan)).astype(np.float32)
 
 
@@ -282,8 +322,9 @@ def _decide(scores: FloatArray, ids: FloatArray) -> FloatArray:
     """``LabelReducer``'s rule on (voxels, classes): first maximum, background unless positive."""
     if not ids.size:
         return np.zeros(scores.shape[0], dtype=np.float32)
-    labels = ids[np.argmax(scores, axis=-1)]
-    labels[np.max(scores, axis=-1) <= 0] = 0
+    winners = np.argmax(scores, axis=-1)
+    labels = ids[winners]
+    labels[np.take_along_axis(scores, winners[:, None], axis=-1)[:, 0] <= 0] = 0
     return labels
 
 

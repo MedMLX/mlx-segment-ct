@@ -8,13 +8,12 @@ they do not replace either runtime or claim complete upstream API coverage.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from os import PathLike
 from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, Required, TypedDict
 
 import numpy as np
 from medmlx_core.outputs import RunResult as _RunResult
-from medmlx_core.typing import MlxRuntime
 from numpy.typing import DTypeLike, NDArray
 
 if TYPE_CHECKING:
@@ -55,66 +54,13 @@ class ArrayBoundary[ArrayT](Protocol):
     def array(self) -> Callable[..., ArrayT]:
         """Return the array constructor for the injected runtime."""
         ...
+
     def eval(self, *args: ArrayT | Sequence[ArrayT] | Mapping[str, ArrayT]) -> None:
         """Evaluate arrays and collections on the injected runtime."""
         ...
+
     def synchronize(self) -> None:
         """Wait for outstanding work on the injected runtime."""
-        ...
-
-
-class CoreRuntime(MlxRuntime, Protocol):
-    def eval(self, *args: array | Mapping[str, array] | Sequence[array]) -> None:
-        """Evaluate native arrays and their containers."""
-        ...
-    def synchronize(self) -> None:
-        """Wait for outstanding native work to complete."""
-        ...
-    def async_eval(self, *args: ArrayTree) -> None:
-        """Schedule evaluation of native array trees."""
-        ...
-    def ones(self, shape: Sequence[int], dtype: Dtype | None = None) -> array:
-        """Create a native array filled with ones."""
-        ...
-    def sin(self, a: array) -> array:
-        """Compute elementwise sine on a native array."""
-        ...
-    def cos(self, a: array) -> array:
-        """Compute elementwise cosine on a native array."""
-        ...
-    def abs(self, a: array) -> array:
-        """Compute elementwise absolute values."""
-        ...
-    def sum(
-        self, a: array, axis: int | Sequence[int] | None = None, keepdims: bool = False
-    ) -> array:
-        """Sum array elements over selected axes."""
-        ...
-    def softmax(
-        self, a: array, axis: int | Sequence[int] | None = None, *, precise: bool = False
-    ) -> array:
-        """Normalize scores along the selected axis."""
-        ...
-    def addmm(
-        self, c: array, a: array, b: array, alpha: float = 1.0, beta: float = 1.0
-    ) -> array:
-        """Multiply matrices and add the supplied bias."""
-        ...
-    def meshgrid(
-        self, *arrays: array, indexing: Literal["xy", "ij"] = "xy", sparse: bool = False
-    ) -> tuple[array, ...]:
-        """Create coordinate grids from native axes."""
-        ...
-    def contiguous(self, a: array, /, *, allow_col_major: bool = False) -> array:
-        """Return a contiguous array in an accepted layout."""
-        ...
-    def load(self, file: str, /, format: str | None = None) -> array | dict[str, array]:
-        """Load an array or named tensor mapping from a file."""
-        ...
-    def save_safetensors(
-        self, file: str, arrays: Mapping[str, array], metadata: Mapping[str, str] | None = None
-    ) -> None:
-        """Write named native arrays to a safetensors file."""
         ...
 
 
@@ -133,8 +79,10 @@ class JointPredictor[ArrayT](Protocol):
 
 
 class CoordinatePredictor[ArrayT](Protocol):
-    def __call__(self, image: ArrayT, coordinates: PatchCoordinates, /) -> ArrayT:
-        """Predict a window using its coordinates in the full image."""
+    def __call__(
+        self, image: ArrayT, coordinates: PatchCoordinates, /
+    ) -> ArrayT | Iterator[ArrayT]:
+        """Predict one window as a score tensor or successive class blocks."""
         ...
 
 
@@ -276,21 +224,27 @@ class NiftiHeader(Protocol):
     def binaryblock(self) -> bytes:
         """Return the binary image header."""
         ...
+
     def __getitem__(self, key: str) -> HostArray:
         """Read a named image header field."""
         ...
+
     def get(self, key: str) -> HostArray | None:
         """Return a named header field if present."""
         ...
+
     def get_zooms(self) -> tuple[float, ...]:
         """Return voxel spacing from the image header."""
         ...
+
     def set_zooms(self, zooms: Sequence[float] | HostArray) -> None:
         """Set voxel spacing in the image header."""
         ...
+
     def get_xyzt_units(self) -> tuple[str, str]:
         """Return the declared spatial and temporal units."""
         ...
+
     def as_byteswapped(self, endianness: str | None = None) -> NiftiHeader:
         """Return a header with the requested byte order."""
         ...
@@ -309,30 +263,38 @@ class NiftiImage(Protocol):
     def shape(self) -> tuple[int, ...]:
         """Return the image dimensions."""
         ...
+
     def get_data_dtype(self) -> np.dtype[NumericScalar]:
         """Return the stored image data dtype."""
         ...
+
     @property
     def header(self) -> NiftiHeader:
         """Return the image header."""
         ...
+
     @property
     def affine(self) -> DoubleArray:
         """Return the voxel-to-world affine."""
         ...
+
     @property
     def dataobj(self) -> HostArray | NiftiArrayProxy:
         """Return the image array or lazy data proxy."""
         ...
+
     def get_sform(self) -> DoubleArray:
         """Return the stored sform affine."""
         ...
+
     def get_qform(self) -> DoubleArray:
         """Return the stored qform affine."""
         ...
+
     def set_sform(self, affine: HostArray, code: int | None = None) -> None:
         """Set the sform affine and optional code."""
         ...
+
     def set_qform(self, affine: HostArray, code: int | None = None) -> None:
         """Set the qform affine and optional code."""
         ...
@@ -349,15 +311,19 @@ class NiftiRuntime(Protocol):
     def Nifti1Image(self) -> NiftiConstructor:
         """Return the NIfTI-1 image constructor."""
         ...
+
     def load(self, filename: str) -> object:
         """Load an image from a path."""
         ...
+
     def save(self, img: NiftiImage, filename: str) -> None:
         """Write an image to a path."""
         ...
+
     def aff2axcodes(self, aff: HostArray) -> tuple[str | None, ...]:
         """Determine spatial axis codes from an affine."""
         ...
+
     def io_orientation(self, affine: HostArray) -> DoubleArray:
         """Determine voxel-axis orientation from an affine."""
         ...
@@ -367,9 +333,11 @@ class OrientationRuntime(Protocol):
     def axcodes2ornt(self, axcodes: tuple[str | None, ...], labels: None = None) -> DoubleArray:
         """Convert axis codes to an orientation transform."""
         ...
+
     def ornt_transform(self, start_ornt: DoubleArray, end_ornt: DoubleArray) -> DoubleArray:
         """Compute the transform between orientations."""
         ...
+
     def inv_ornt_aff(self, ornt: DoubleArray, shape: Sequence[int]) -> DoubleArray:
         """Return the inverse voxel affine for an orientation and shape."""
         ...
@@ -418,7 +386,8 @@ class StandInRuntime[ArrayT, DtypeT](ArrayBoundary[ArrayT], Protocol):
     def float32(self) -> DtypeT:
         """Return the injected runtime float32 dtype."""
         ...
-    def sum(self, a: ArrayT) -> ArrayT | NumericScalar:
+
+    def sum(self, a: ArrayT, /) -> ArrayT | NumericScalar:
         """Sum the supplied array values."""
         ...
 

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from medmlx_core.typing import MetalKernel
-
-from mlx_segment_ct._types import CoreRuntime
+from medmlx_core.typing import MlxRuntime
 
 if TYPE_CHECKING:
     from mlx.core import array
@@ -49,18 +47,15 @@ class Gelu:
     except for the explicit ``fma`` calls.
     """
 
-    def __init__(self, mx: CoreRuntime) -> None:
+    def __init__(self, mx: MlxRuntime) -> None:
         """Store the native runtime used for the GELU activation."""
         self.mx = mx
-        self.kernel = cast(
-            MetalKernel,
-            mx.fast.metal_kernel(
-                name="vista_arm_gelu",
-                input_names=["X"],
-                output_names=["Y"],
-                source=_GELU,
-                header="#pragma clang fp contract(off)\n",
-            ),
+        self.kernel = mx.fast.metal_kernel(
+            name="vista_arm_gelu",
+            input_names=["X"],
+            output_names=["Y"],
+            source=_GELU,
+            header="#pragma clang fp contract(off)\n",
         )
 
     def __call__(self, values: array) -> array:

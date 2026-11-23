@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import gzip
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast
 
@@ -13,8 +13,9 @@ import nibabel as nib
 import numpy as np
 import pytest
 from fixture_inputs import AutomaticModelStand
-from medmlx_core.errors import AssetNotReadyError, InvalidInputError
+from medmlx_core.errors import AssetNotReadyError, InvalidInputError, ModelExecutionError
 from medmlx_core.outputs import validate_outputs
+from medmlx_core.typing import MlxRuntime
 from reference_support import (
     HostArrays,
     assert_restored,
@@ -30,7 +31,6 @@ from mlx_segment_ct import additional_shapes, medmlx, required_shapes
 from mlx_segment_ct._types import (
     ArrayValue,
     CoordinatePredictor,
-    CoreRuntime,
     HostArray,
     Metrics,
     NiftiImage,
@@ -55,6 +55,7 @@ from mlx_segment_ct.labels import (
 from mlx_segment_ct.restoration import ScoreRestorer
 
 if TYPE_CHECKING:
+    from mlx.core import array
     from oracle_types import (
         CasesMetadata,
         CtmrMetadata,
@@ -385,7 +386,7 @@ def test_segment_rejects_invalid_inputs(
         cast("RawRunner", medmlx.run)(**kwargs)
 
 
-def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: CoreRuntime) -> None:
+def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: MlxRuntime) -> None:
     """Reject missing, misshapen, wrongly typed, unexpected and corrupt checkpoint tensors."""
     weights = tmp_path / "automatic.safetensors"
     mx.save_safetensors(
@@ -406,8 +407,44 @@ def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: Core
         medmlx.load_weights(mx, weights, {})
 
 
+@pytest.mark.parametrize("caller_limit", [256 << 20, 3 << 30], ids=["below_1gib", "above_1gib"])
+def test_run_preserves_caller_memory_limits_after_failed_prediction(
+    tmp_path: Path,
+    weights_dir: Path,
+    mx: MlxRuntime,
+    caller_limit: int,
+    stand_ins: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Respect a smaller working set and restore both process limits on failure."""
+
+    def nonfinite(_model: object, patch: array) -> Iterator[array]:
+        assert mx.get_memory_limit() <= caller_limit
+        yield patch * float("nan")
+
+    monkeypatch.setattr("medmlx_core.runtime.import_mlx", lambda: mx)
+    monkeypatch.setattr(AutomaticModelStand, "logit_blocks", nonfinite)
+    source = save_volume(tmp_path / "ct.nii.gz", ct_volume(), np.eye(4))
+    previous_memory = mx.set_memory_limit(caller_limit)
+    previous_cache = mx.set_cache_limit(caller_limit)
+    try:
+        with pytest.raises(ModelExecutionError, match="nonfinite scores"):
+            medmlx.run(
+                model="mlx-segment-ct",
+                image_path=source,
+                weights_path=weights_dir,
+                output_dir=tmp_path / "out",
+                classes=[1],
+            )
+        assert mx.get_memory_limit() == caller_limit
+        assert mx.set_cache_limit(caller_limit) == caller_limit
+    finally:
+        mx.set_memory_limit(previous_memory)
+        mx.set_cache_limit(previous_cache)
+
+
 def test_segment_full_networks_end_to_end_on_metal(
-    tmp_path: Path, mx: CoreRuntime, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, mx: MlxRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Run both registered runners through the full native networks on Metal."""
     weights = tmp_path / "weights"
@@ -422,6 +459,7 @@ def test_segment_full_networks_end_to_end_on_metal(
     affine = np.diag([0.9, 0.9, 2.5, 1.0])
     source = save_volume(tmp_path / "ct.nii.gz", ct_volume((40, 36, 16)), affine)
     interactive = {"classes": [1], "points": [[20, 18, 8]], "point_labels": [1]}
+    caller_limit = mx.get_memory_limit()
     for index, (model, request, labels) in enumerate(
         (
             ("mlx-segment-ct", {"classes": [3, 1]}, {0, 1, 3}),
@@ -433,6 +471,7 @@ def test_segment_full_networks_end_to_end_on_metal(
             model=model,
             image_path=source, weights_path=weights, output_dir=tmp_path / f"out{index}", **request
         )
+        assert mx.get_memory_limit() == caller_limit
         paths, artifacts = validate_outputs(result)
         mask = artifacts["mask"]
         assert (mask["kind"], mask.get("grid_of")) == ("label_map", "image_path")

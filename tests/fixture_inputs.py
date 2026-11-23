@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -114,3 +114,7 @@ class AutomaticModelStand[ArrayT: ArrayValue, DtypeT: Float32Dtype]:
         return cast(
             "ArrayT", image * self.scale + mx.array(ramp)[None, None] * self.slope + self.bias
         )
+
+    def logit_blocks(self, image: ArrayT) -> Iterator[ArrayT]:
+        """Emit the fixture's class scores for one patch."""
+        yield self(image)

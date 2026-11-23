@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
 from fixture_inputs import AutomaticStandIn, PointStandIn
+from medmlx_core.typing import MlxRuntime
 from reference_support import HostArrays, assert_bitwise, load_fixture, seeded_weights
 
 from mlx_segment_ct import (
@@ -22,7 +23,6 @@ from mlx_segment_ct import (
 from mlx_segment_ct._types import (
     ArrayBoundary,
     ArrayValue,
-    CoreRuntime,
     HostArray,
     PatchCoordinates,
     PointPredictor,
@@ -51,11 +51,14 @@ def automatic_case[ArrayT: ArrayValue](
     planes: list[HostArray] = []
     counts: list[HostArray] = []
 
-    def predict(patch: ArrayT, coordinates: PatchCoordinates) -> ArrayT:
+    def predict(patch: ArrayT, coordinates: PatchCoordinates) -> ArrayT | Iterator[ArrayT]:
         trace.extend(
             [[int(cast("int", part.start)) for part in coord[2:]] for coord in coordinates]
         )
-        return model(patch)
+        scores = model(patch)
+        if not reduce_labels:
+            return iter((cast("ArrayT", scores[:, :1]), cast("ArrayT", scores[:, 1:])))
+        return scores
 
     def finalize(plane: int, scores: HostArray, count: HostArray) -> None:
         assert plane == len(planes)
@@ -69,7 +72,7 @@ def automatic_case[ArrayT: ArrayValue](
         predict,
         data["class_ids"].tolist(),
         cast("Sequence[int]", data["roi"]),
-        weight=data["weight"],
+        weight=None if str(data["mode"]) == "constant" else data["weight"],
         finalized=finalize,
         mx=mx,
     )
@@ -99,7 +102,7 @@ def test_automatic_rolling_matches_monai(name: str, reduce_labels: bool) -> None
 
 
 @pytest.mark.parametrize("name", ["constant", "padded", "gaussian"])
-def test_automatic_full_logit_stitching_matches_monai(name: str, mx: CoreRuntime) -> None:
+def test_automatic_full_logit_stitching_matches_monai(name: str, mx: MlxRuntime) -> None:
     """Compare full-logit stitching with MONAI recordings."""
     data, _ = load_fixture(f"window_{name}")
     model = AutomaticStandIn(int(data["network_seed"]), mx=mx)
@@ -190,7 +193,7 @@ def test_bounded_reduction_ties_background_and_global_id_order() -> None:
 
 
 @pytest.mark.parametrize("kind", ["automatic", "point"])
-def test_full_network_window_wiring_on_metal(kind: str, mx: CoreRuntime) -> None:
+def test_full_network_window_wiring_on_metal(kind: str, mx: MlxRuntime) -> None:
     """Exercise native full-network window wiring using recorded fixtures."""
     name = "full_window_constant" if kind == "automatic" else "full_point_window_overlap"
     data, info = load_fixture(name)
