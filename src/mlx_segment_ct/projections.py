@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from medmlx_core.typing import MetalKernel
-
-from mlx_segment_ct._types import CoreRuntime
+from medmlx_core.typing import MlxRuntime
 
 if TYPE_CHECKING:
     from mlx.core import array
@@ -50,18 +48,15 @@ class Projections:
     places the bias as the reference's tiling does.
     """
 
-    def __init__(self, mx: CoreRuntime) -> None:
+    def __init__(self, mx: MlxRuntime) -> None:
         """Compile the ordered projection kernel; weights are passed per call."""
         self.mx = mx
-        self.kernel = cast(
-            MetalKernel,
-            mx.fast.metal_kernel(
-                name="vista_arm_projection",
-                input_names=["X", "W", "B"],
-                output_names=["Y"],
-                source=_PROJECT,
-                header="#pragma clang fp contract(off)\n",
-            ),
+        self.kernel = mx.fast.metal_kernel(
+            name="vista_arm_projection",
+            input_names=["X", "W", "B"],
+            output_names=["Y"],
+            source=_PROJECT,
+            header="#pragma clang fp contract(off)\n",
         )
 
     def __call__(self, values: array, weight: array, bias: array, *, linear: bool) -> array:

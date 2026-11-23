@@ -6,7 +6,9 @@ from collections.abc import Iterator, Mapping, Sequence
 from math import prod
 from typing import TYPE_CHECKING, Literal, cast
 
-from mlx_segment_ct._types import ArrayValue, CoreRuntime
+from medmlx_core.typing import MlxRuntime
+
+from mlx_segment_ct._types import ArrayValue
 
 if TYPE_CHECKING:
     from mlx.core import array
@@ -32,7 +34,7 @@ class FeatureModel:
     decoder or ``up_layers`` for the point decoder.
     """
 
-    def __init__(self, weights: Mapping[str, array], *, mx: CoreRuntime, branch: str):
+    def __init__(self, weights: Mapping[str, array], *, mx: MlxRuntime, branch: str):
         """Initialize the native shared feature graph and its selected branch."""
         self.weights = weights
         self.mx = mx
@@ -151,7 +153,7 @@ class AutomaticModel(FeatureModel):
     construction and define the output channel order.
     """
 
-    def __init__(self, weights: Mapping[str, array], class_ids: Sequence[int], *, mx: CoreRuntime):
+    def __init__(self, weights: Mapping[str, array], class_ids: Sequence[int], *, mx: MlxRuntime):
         """Initialize the automatic segmentation head for selected class IDs."""
         super().__init__(weights, mx=mx, branch="up_layers_auto")
         self.embedding = self.embed_classes(class_ids)

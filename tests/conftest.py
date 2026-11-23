@@ -7,12 +7,11 @@ import sys
 from typing import cast
 
 import pytest
-
-from mlx_segment_ct._types import CoreRuntime
+from medmlx_core.typing import MlxRuntime
 
 
 @pytest.fixture(scope="session")
-def mx() -> CoreRuntime:
+def mx() -> MlxRuntime:
     """Provide the Metal runtime when the subprocess probe succeeds."""
     probe = subprocess.run(
         [
@@ -27,6 +26,6 @@ def mx() -> CoreRuntime:
         pytest.skip("Native MLX execution requires accessible Apple Silicon Metal")
     from medmlx_core.runtime import import_mlx
 
-    module = cast("CoreRuntime", import_mlx())
+    module = cast("MlxRuntime", import_mlx())
     module.set_default_device(module.gpu)
     return module

@@ -9,10 +9,11 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
+from medmlx_core.typing import MlxRuntime
 from reference_support import load_fixture, native, seeded_weights
 
 from mlx_segment_ct import AutomaticModel, AutomaticUpsample, PointModel, PointWindowPredictor
-from mlx_segment_ct._types import ArrayValue, CoreRuntime, HostArray, Metrics
+from mlx_segment_ct._types import ArrayValue, HostArray, Metrics
 from mlx_segment_ct.correction import normalized_point_positions
 from mlx_segment_ct.correction_inferer import point_based_window_inferer
 
@@ -28,7 +29,7 @@ def assert_logits(actual: ArrayValue, expected: HostArray, *, atol: float = 1e-6
     np.testing.assert_array_equal(np.asarray(actual) > 0, expected > 0)
 
 
-def test_automatic_graph_all_bundle_classes(mx: CoreRuntime) -> None:
+def test_automatic_graph_all_bundle_classes(mx: MlxRuntime) -> None:
     """Compare automatic graph outputs across bundle class prompts."""
     data, info = load_fixture("automatic_subset")
     weights = seeded_weights(cast("GraphMetadata", info)["weight_shapes"], data["weight_seed"], mx)
@@ -46,7 +47,7 @@ def test_automatic_graph_all_bundle_classes(mx: CoreRuntime) -> None:
 
 
 @pytest.mark.parametrize("channels", [96, 192, 384, 768])
-def test_decoder_upsampling_all_spatial_parities(channels: int, mx: CoreRuntime) -> None:
+def test_decoder_upsampling_all_spatial_parities(channels: int, mx: MlxRuntime) -> None:
     """Compare decoder upsampling across spatial parity cases."""
     data, _ = load_fixture(f"upsample_{channels}")
     rng = np.random.default_rng(int(data["seed"]))
@@ -61,7 +62,7 @@ def test_decoder_upsampling_all_spatial_parities(channels: int, mx: CoreRuntime)
 
 
 @pytest.fixture(scope="module")
-def point_model(mx: CoreRuntime) -> PointModel:
+def point_model(mx: MlxRuntime) -> PointModel:
     """Provide the seeded point model shared by the point-target recordings."""
     data, info = load_fixture("point_target_1")
     weights = seeded_weights(cast("GraphMetadata", info)["weight_shapes"], data["weight_seed"], mx)
@@ -70,7 +71,7 @@ def point_model(mx: CoreRuntime) -> PointModel:
 
 @pytest.mark.parametrize("target", [1, 25, 26, 117, 254])
 def test_point_graph_special_and_zero_shot_prompts(
-    target: int, point_model: PointModel, mx: CoreRuntime
+    target: int, point_model: PointModel, mx: MlxRuntime
 ) -> None:
     """Compare point-graph outputs for special and zero-shot targets."""
     data, _ = load_fixture(f"point_target_{target}")
@@ -82,7 +83,7 @@ def test_point_graph_special_and_zero_shot_prompts(
     assert_logits(actual, data["output"])
 
 
-def test_previous_logits_and_old_click_context(point_model: PointModel, mx: CoreRuntime) -> None:
+def test_previous_logits_and_old_click_context(point_model: PointModel, mx: MlxRuntime) -> None:
     """Compare correction using previous logits and earlier click context."""
     data, _ = load_fixture("point_previous")
     metrics: Metrics = {"patch_seconds": []}
@@ -106,7 +107,7 @@ def test_previous_logits_and_old_click_context(point_model: PointModel, mx: Core
 
 
 @pytest.fixture(scope="module")
-def released_point_model(mx: CoreRuntime) -> PointModel:
+def released_point_model(mx: MlxRuntime) -> PointModel:
     """Load released point weights when their local folder is configured."""
     directory = os.environ.get("NV_SEGMENT_CT_WEIGHTS_DIR")
     if directory is None:
@@ -126,7 +127,7 @@ def released_point_model(mx: CoreRuntime) -> PointModel:
     "case", ["native", "flipped", "oblique", "exclude", "small", "vessel", "tumor"]
 )
 def test_staged_real_128_cube_matches_independent_cuda_fp32(
-    case: str, released_point_model: PointModel, mx: CoreRuntime
+    case: str, released_point_model: PointModel, mx: MlxRuntime
 ) -> None:
     """Compare the staged real point case with independently recorded CUDA FP32 output."""
     fixtures = os.environ.get("NV_SEGMENT_CT_CUDA_FIXTURES")

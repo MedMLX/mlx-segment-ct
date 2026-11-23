@@ -5,11 +5,9 @@ from __future__ import annotations
 import struct
 from itertools import count
 from math import prod
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
-from medmlx_core.typing import MetalKernel
-
-from mlx_segment_ct._types import CoreRuntime
+from medmlx_core.typing import MlxRuntime
 
 if TYPE_CHECKING:
     from mlx.core import array
@@ -101,7 +99,7 @@ _SOURCES = {
 class InstanceNorm:
     """Two-pass moments and source-rounded affine for NCDHW InstanceNorm."""
 
-    def __init__(self, mx: CoreRuntime, eps: float = 1e-5) -> None:
+    def __init__(self, mx: MlxRuntime, eps: float = 1e-5) -> None:
         """Initialize the native instance-normalization runtime."""
         self.mx = mx
         # eps as a float32 high part plus its residual; the coefficient kernel adds both.
@@ -109,15 +107,12 @@ class InstanceNorm:
         self.eps = mx.array([high, eps - high], dtype=mx.float32)
         namespace = next(_NAMES)
         self.kernels = {
-            name: cast(
-                MetalKernel,
-                mx.fast.metal_kernel(
-                    name=f"vista_instance_norm_{namespace}_{name}",
-                    input_names=inputs,
-                    output_names=outputs,
-                    source=source,
-                    header=_HEADER,
-                ),
+            name: mx.fast.metal_kernel(
+                name=f"vista_instance_norm_{namespace}_{name}",
+                input_names=inputs,
+                output_names=outputs,
+                source=source,
+                header=_HEADER,
             )
             for name, (inputs, outputs, source) in _SOURCES.items()
         }

@@ -14,19 +14,21 @@ NV-Segment-CTMR f9f5f51 configs/inference.json uses MONAI 1.6.0:
 * ``Orientationd`` to RAS and ``CastToTyped`` float32;
 * ``Invertd`` with nearest interpolation, then ``SaveImaged`` (float32 NIfTI).
 
-Torch's CPU arithmetic is reproduced in float64 NumPy: ``torch.linspace`` with its
+``preprocess`` runs ``Spacingd``, the foreground box, the fixed intensity range and
+``Orientationd`` through ``medmlx_core.transforms``; ``invert`` reorients through it.
+The reader, MONAI's header fix-up, the percentile scaling, the label-map writer and
+``Invertd``'s nearest resampling stay here. That resampling and ``RestorationGrid``
+reproduce Torch's CPU arithmetic in float64 NumPy: ``torch.linspace`` with its
 fused multiply-add, ``affine_grid`` and ``grid_sample`` (5D, border padding) in
-their source operation order, and the 4x4 affine products. MONAI's NumPy
-helpers are called exactly as MONAI calls them. For axis-aligned affines (no
-rotation or shear) the results are bitwise identical to MONAI on the fixture
-host, because every product then has a single nonzero term. Oblique affines go
-through the same algorithm but their multi-term sums can round differently from
-a particular BLAS by float64 rounding.
+their source operation order, and the 4x4 affine products. For axis-aligned
+affines (no rotation or shear) the results are bitwise identical to MONAI on the
+fixture host, because every product then has a single nonzero term. Oblique
+affines go through the same algorithm but their multi-term sums can round
+differently from a particular BLAS by float64 rounding.
 """
 
 from __future__ import annotations
 
-import itertools
 import math
 from dataclasses import dataclass
 from fractions import Fraction
@@ -37,6 +39,13 @@ from typing import Literal, cast
 import nibabel as nib
 import numpy as np
 from medmlx_core.errors import InvalidInputError
+from medmlx_core.transforms import (
+    axis_codes,
+    foreground_box,
+    orient,
+    scale_intensity_range,
+    spacing,
+)
 from nibabel import orientations
 from nibabel.filebasedimages import ImageFileError
 from nibabel.spatialimages import HeaderDataError
@@ -44,6 +53,7 @@ from nibabel.spatialimages import HeaderDataError
 from mlx_segment_ct._types import (
     BoolArray,
     DoubleArray,
+    FloatArray,
     HostArray,
     IntArray,
     NiftiHeader,
@@ -103,7 +113,7 @@ class Preprocessed:
 
         Returns the float32 field and the affine MONAI records for it.
         """
-        data, affine = _orient(volume, self.affine, nifti_api.aff2axcodes(self.oriented_from))
+        data, affine = orient(volume, self.affine, axis_codes(self.oriented_from))
         # CropForeground.inverse: the zero padding is undone by a full-extent crop
         # (identity translation), then Crop.inverse pads back what was cropped.
         start, end, shape = self.cropped.start, self.cropped.end, self.cropped.source_shape
@@ -112,7 +122,7 @@ class Preprocessed:
             data = np.pad(data, [(0, 0), *pads])
             affine = affine @ _translate([-begin for begin, _ in pads])
         return _spatial_resample(
-            data, affine, self.resampled.source_affine, self.resampled.source_shape, "nearest"
+            data, affine, self.resampled.source_affine, self.resampled.source_shape
         )
 
     def restoration_grid(self) -> RestorationGrid:
@@ -192,7 +202,7 @@ class RestorationGrid:
         return p0, p1, p2
 
 
-def load_volume(path: Path) -> tuple[HostArray, DoubleArray]:
+def load_volume(path: Path) -> tuple[FloatArray, DoubleArray]:
     """``LoadImaged(image_only=True)`` and ``EnsureChannelFirstd`` via NibabelReader.
 
     Accepts a 3D NIfTI-1/2 image or a 4D image with one trailing channel.
@@ -235,15 +245,15 @@ def load_volume(path: Path) -> tuple[HostArray, DoubleArray]:
 
 
 def preprocess(
-    image: HostArray,
+    image: FloatArray,
     affine: DoubleArray,
-    extra: dict[str, tuple[HostArray, DoubleArray]] | None = None,
+    extra: dict[str, tuple[FloatArray, DoubleArray]] | None = None,
     *,
     intensity: Intensity = "range",
 ) -> Preprocessed:
     """Run the pinned preprocessing on the image and optional nearest-resampled keys.
 
-    ``extra`` maps keys to (volume, affine) pairs for nearest resampling, followed by
+    ``extra`` maps keys to float32 (volume, affine) pairs for nearest resampling, followed by
     the image's crop and RAS orientation. ``intensity`` selects
     NV-Segment-CT's fixed range (``"range"``) or NV-Segment-CTMR's percentiles.
 
@@ -260,9 +270,9 @@ def preprocess(
     """
     if not np.isfinite(image).all():
         raise InvalidInputError("NV-Segment-CT image contains non-finite voxel intensities")
-    resampled_image, image_affine = _spacing(image, affine, "bilinear")
+    resampled_image, image_affine = spacing(image, affine, RESAMPLE_SPACING, mode="bilinear")
     resampled = _Resampled(affine, _shape(image))
-    start, end = _foreground_box(resampled_image)
+    start, end = foreground_box(resampled_image, CROP_MARGIN)
     if any(stop <= begin for begin, stop in zip(start, end, strict=True)):
         raise InvalidInputError(
             "NV-Segment-CT found no voxel above 0 after resampling; the CT foreground crop is empty"
@@ -272,21 +282,21 @@ def preprocess(
     data = resampled_image[window]
     image_affine = image_affine @ _translate(start)
     if intensity == "range":
-        data = scale_intensity_range(data)
+        data = scale_intensity_range(data, *INTENSITY_RANGE, 0.0, 1.0)
     elif intensity == "percentiles":
         data = scale_intensity_percentiles(data)
     else:
         raise ValueError(f"Unknown NV intensity scaling: {intensity!r}")
     oriented_from = image_affine
-    data, image_affine = _orient(data, image_affine, ("R", "A", "S"))
+    data, image_affine = orient(data, image_affine, "RAS")
     outputs: dict[str, HostArray] = {}
     for key, (volume, volume_affine) in (extra or {}).items():
-        values, values_affine = _spacing(volume, volume_affine, "nearest")
+        values, values_affine = spacing(volume, volume_affine, RESAMPLE_SPACING, mode="nearest")
         if _shape(values) != cropped.source_shape:
             raise InvalidInputError(f"NV-Segment-CT {key} resamples to a different grid")
         values = values[window]
         values_affine = values_affine @ _translate(start)
-        outputs[key] = _orient(values, values_affine, ("R", "A", "S"))[0].astype(np.float32)
+        outputs[key] = orient(values, values_affine, "RAS")[0].astype(np.float32)
     return Preprocessed(
         image=data.astype(np.float32),
         affine=image_affine,
@@ -296,14 +306,6 @@ def preprocess(
         oriented_from=oriented_from,
         extra=outputs,
     )
-
-
-def scale_intensity_range(image: HostArray) -> HostArray:
-    """``ScaleIntensityRanged`` on float32 data, in Torch's scalar operation order."""
-    a_min, a_max = INTENSITY_RANGE
-    values = (image - np.float32(a_min)) / np.float32(a_max - a_min)
-    values = values * np.float32(1) + np.float32(0)
-    return np.clip(values, np.float32(0), np.float32(1)).astype(np.float32)
 
 
 def scale_intensity_percentiles(image: HostArray) -> HostArray:
@@ -381,32 +383,17 @@ def save_label_map(path: Path, labels: HostArray, affine: DoubleArray) -> None:
     nifti_api.save(image, str(path))
 
 
-def _spacing(volume: HostArray, affine: DoubleArray, mode: str) -> tuple[HostArray, DoubleArray]:
-    """``Spacing(pixdim=1.5, diagonal=False)``: target grid, then ``SpatialResample``."""
-    affine_ = _to_affine_nd(affine)
-    out_d = np.array(RESAMPLE_SPACING, dtype=np.float64)
-    orig_d = _affine_to_spacing(affine_)
-    for index, spacing in enumerate(orig_d):
-        target = out_d[index]
-        out_d[index] = spacing if target - AFFINE_TOL <= spacing <= target + AFFINE_TOL else target
-    new_affine = _zoom_affine(affine_, out_d)
-    output_shape, offset = _compute_shape_offset(_shape(volume), affine_, new_affine)
-    new_affine[:3, -1] = offset[:3]
-    return _spatial_resample(volume, affine, new_affine, tuple(output_shape.tolist()), mode)
-
-
 def _spatial_resample(
     volume: HostArray,
     src_affine: DoubleArray,
     dst_affine: DoubleArray,
     spatial_size: tuple[int, ...],
-    mode: str,
 ) -> tuple[HostArray, DoubleArray]:
-    """MONAI ``spatial_resample`` through ``AffineTransform`` (Torch grid sampling)."""
+    """MONAI nearest ``spatial_resample`` through ``AffineTransform`` (Torch grid sampling)."""
     theta, new_affine = _resample_plan(src_affine, dst_affine, _shape(volume), spatial_size)
     if theta is None:
         return volume.astype(np.float32), new_affine
-    return _grid_sample(volume, theta, spatial_size, mode), new_affine
+    return _grid_sample(volume, theta, spatial_size), new_affine
 
 
 def _resample_plan(
@@ -535,35 +522,24 @@ def _two_sum(a: DoubleArray, b: DoubleArray) -> tuple[DoubleArray, DoubleArray]:
     return total, (a - (total - b_virtual)) + (b - b_virtual)
 
 
-def _grid_sample(
-    volume: HostArray, theta: HostArray, out_shape: tuple[int, ...], mode: str
-) -> HostArray:
-    """``grid_sample(affine_grid(theta))`` for 5D input, border padding, align_corners=False.
+def _grid_sample(volume: HostArray, theta: HostArray, out_shape: tuple[int, ...]) -> HostArray:
+    """Nearest ``grid_sample(affine_grid(theta))`` for 5D input, border padding,
+    align_corners=False.
 
     Output voxels are processed in slabs along the first axis; each voxel follows
-    Torch's CPU kernel exactly, including corner order and bounds checks.
+    Torch's CPU kernel exactly, including its bounds checks.
     """
     sizes = _shape(volume)  # Torch (D, H, W)
     depth, height, width = (int(value) for value in out_shape)
     base_w = base_axis(width)[None, None, :]
     base_h = base_axis(height)[None, :, None]
     base_d = base_axis(depth)[:, None, None]
-    # NiBabel returns column-major voxels. Making the float64 copy row-major lets the
-    # corner gathers read memory in output order, several times faster, with every
-    # value unchanged.
-    source = np.ascontiguousarray(volume, dtype=np.float64) if mode == "bilinear" else volume
     output = np.empty((volume.shape[0], depth, height, width), dtype=np.float32)
     rows = max(1, _CHUNK_VOXELS // max(1, height * width))
     for first in range(0, depth, rows):
         last = min(depth, first + rows)
         ix, iy, iz = _grid_coordinates(theta, sizes, (base_w, base_h, base_d[first:last]))
-        block = (slice(None), slice(first, last))
-        if mode == "nearest":
-            output[block] = _nearest(source, ix, iy, iz)
-        elif mode == "bilinear":
-            output[block] = _trilinear(source, ix, iy, iz)
-        else:
-            raise ValueError(f"Unsupported resampling mode: {mode}")
+        output[:, first:last] = _nearest(volume, ix, iy, iz)
     return output
 
 
@@ -628,61 +604,6 @@ def _nearest(source: HostArray, ix: HostArray, iy: HostArray, iz: HostArray) -> 
     return np.where(inside, values, 0)
 
 
-def _trilinear(source: HostArray, ix: HostArray, iy: HostArray, iz: HostArray) -> HostArray:
-    # Sample ``source`` (C, Z, Y, X) at continuous voxel indices; float64 result (C, ...).
-    # Corners outside the grid contribute nothing, so edge samples fade toward zero.
-    """Interpolate the eight neighboring voxels with zero outside the grid."""
-    x0, y0, z0 = (np.floor(value).astype(np.int64) for value in (ix, iy, iz))
-    x1, y1, z1 = x0 + 1, y0 + 1, z0 + 1
-    east, west = ix - x0, x1 - ix
-    south, north = iy - y0, y1 - iy
-    bottom, top = iz - z0, z1 - iz
-    corners = (
-        (z0, y0, x0, west * north * top),
-        (z0, y0, x1, east * north * top),
-        (z0, y1, x0, west * south * top),
-        (z0, y1, x1, east * south * top),
-        (z1, y0, x0, west * north * bottom),
-        (z1, y0, x1, east * north * bottom),
-        (z1, y1, x0, west * south * bottom),
-        (z1, y1, x1, east * south * bottom),
-    )
-    shape = np.broadcast_shapes(ix.shape, iy.shape, iz.shape)
-    result = np.zeros((source.shape[0], *shape), dtype=np.float64)
-    for z, y, x, weight in corners:
-        values, inside = _gather(source, z, y, x)
-        result = np.where(inside, result + values * weight, result)
-    return result
-
-
-def _foreground_box(image: HostArray) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
-    """``generate_spatial_bounding_box`` for voxels above zero, margin 10, allow_smaller."""
-    data = (image > 0).any(0)
-    spatial = data.shape
-    start, end = [0, 0, 0], [0, 0, 0]
-    for axis, reduced in enumerate(itertools.combinations(reversed(range(3)), 2)):
-        profile = data.any(axis=reduced)
-        if not profile.any():
-            return (0, 0, 0), (0, 0, 0)
-        hits = np.flatnonzero(profile)
-        start[axis] = max(int(hits[0]) - CROP_MARGIN, 0)
-        end[axis] = min(int(hits[-1]) + CROP_MARGIN + 1, spatial[axis])
-    return (start[0], start[1], start[2]), (end[0], end[1], end[2])
-
-
-def _orient(
-    volume: HostArray, affine: DoubleArray, axcodes: tuple[str | None, ...]
-) -> tuple[HostArray, DoubleArray]:
-    """``Orientation(axcodes)``: flips, then the axis permutation; NumPy affine product."""
-    ornt, new_affine = _orientation(affine, _shape(volume), axcodes)
-    flips = [axis + 1 for axis, flip in enumerate(ornt[:, 1]) if flip == -1]
-    data = np.flip(volume, axis=tuple(flips)) if flips else volume
-    order = [0, *(int(axis) + 1 for axis in np.argsort(ornt[:, 0]))]
-    if order != [0, 1, 2, 3]:
-        data = np.transpose(data, order)
-    return np.ascontiguousarray(data), new_affine
-
-
 def _orientation(
     affine: DoubleArray, shape: tuple[int, int, int], axcodes: tuple[str | None, ...]
 ) -> tuple[HostArray, DoubleArray]:
@@ -727,55 +648,6 @@ def _affine_to_spacing(affine: DoubleArray, rank: int = 3) -> DoubleArray:
     spacing = np.sqrt(np.sum(block * block, axis=0))
     spacing[spacing == 0] = 1.0
     return spacing
-
-
-def _zoom_affine(affine: DoubleArray, scale: HostArray) -> DoubleArray:
-    """``zoom_affine(diagonal=False)``: keep orientation and rotation, set voxel sizes."""
-    affine = np.array(affine, dtype=float, copy=True)
-    norm = _affine_to_spacing(affine, len(affine) - 1)
-    scale_np = np.array(scale, dtype=float, copy=True)[: len(affine) - 1]
-    scale_np = np.asarray([s if s and s > 0 else n for s, n in zip(scale_np, norm, strict=True)])
-    scale_np[scale_np == 0] = 1.0
-    rzs = affine[:-1, :-1]
-    zs = np.linalg.cholesky(rzs.T @ rzs).T
-    rotation = rzs @ np.linalg.inv(zs)
-    s = np.sign(np.diag(zs)) * np.abs(scale_np)
-    new_affine = np.eye(len(affine))
-    new_affine[:-1, :-1] = rotation @ np.diag(s)
-    return new_affine
-
-
-def _compute_shape_offset(
-    spatial_shape: tuple[int, ...], in_affine: DoubleArray, out_affine: DoubleArray
-) -> tuple[HostArray, DoubleArray]:
-    """``compute_shape_offset(scale_extent=False)``."""
-    shape = np.array(tuple(spatial_shape), copy=True, dtype=float)
-    in_coords = [(0.0, dim - 1.0) for dim in shape]
-    corners = cast("DoubleArray", np.asarray(np.meshgrid(*in_coords, indexing="ij"))).reshape(
-        (len(shape), -1)
-    )
-    corners = np.concatenate((corners, np.ones_like(corners[:1])))
-    try:
-        corners_out = np.linalg.solve(out_affine, in_affine) @ corners
-    except np.linalg.LinAlgError as exc:
-        raise InvalidInputError(f"Affine {out_affine} is not invertible") from exc
-    corners = in_affine @ corners
-    all_dist = corners_out[:-1].copy()
-    corners_out = corners_out[:-1] / corners_out[-1]
-    out_shape = np.round(cast("DoubleArray", np.ptp(corners_out, axis=1)) + 1.0)
-    offset = None
-    for i in range(corners.shape[1]):
-        min_corner = np.min(all_dist - all_dist[:, i : i + 1], 1)
-        if np.allclose(min_corner, 0.0, rtol=AFFINE_TOL):
-            offset = corners[:-1, i]
-            break
-    if offset is None:
-        offset = (
-            in_affine[:-1, :-1] @ (shape / 2.0)
-            + in_affine[:-1, -1]
-            - out_affine[:-1, :-1] @ (out_shape / 2.0)
-        )
-    return out_shape.astype(int, copy=False), offset
 
 
 def _swappable(header: NiftiHeader) -> bool:

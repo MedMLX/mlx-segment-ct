@@ -15,6 +15,7 @@ import pytest
 from fixture_inputs import AutomaticModelStand
 from medmlx_core.errors import AssetNotReadyError, InvalidInputError, ModelExecutionError
 from medmlx_core.outputs import validate_outputs
+from medmlx_core.typing import MlxRuntime
 from reference_support import (
     HostArrays,
     assert_restored,
@@ -30,7 +31,6 @@ from mlx_segment_ct import additional_shapes, medmlx, required_shapes
 from mlx_segment_ct._types import (
     ArrayValue,
     CoordinatePredictor,
-    CoreRuntime,
     HostArray,
     Metrics,
     NiftiImage,
@@ -386,7 +386,7 @@ def test_segment_rejects_invalid_inputs(
         cast("RawRunner", medmlx.run)(**kwargs)
 
 
-def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: CoreRuntime) -> None:
+def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: MlxRuntime) -> None:
     """Reject missing, misshapen, wrongly typed, unexpected and corrupt checkpoint tensors."""
     weights = tmp_path / "automatic.safetensors"
     mx.save_safetensors(
@@ -411,7 +411,7 @@ def test_loading_rejects_mismatched_and_corrupt_weights(tmp_path: Path, mx: Core
 def test_run_preserves_caller_memory_limits_after_failed_prediction(
     tmp_path: Path,
     weights_dir: Path,
-    mx: CoreRuntime,
+    mx: MlxRuntime,
     caller_limit: int,
     stand_ins: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -444,7 +444,7 @@ def test_run_preserves_caller_memory_limits_after_failed_prediction(
 
 
 def test_segment_full_networks_end_to_end_on_metal(
-    tmp_path: Path, mx: CoreRuntime, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, mx: MlxRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Run both registered runners through the full native networks on Metal."""
     weights = tmp_path / "weights"

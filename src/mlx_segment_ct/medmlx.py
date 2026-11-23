@@ -18,9 +18,10 @@ from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, cast, overload
 
+from medmlx_core.typing import MlxRuntime
+
 from mlx_segment_ct._types import (
     Checkpoint,
-    CoreRuntime,
     Details,
     HostArray,
     Metrics,
@@ -41,7 +42,7 @@ import numpy as np
 from medmlx_core.errors import AssetNotReadyError, InvalidInputError, ModelExecutionError
 from medmlx_core.files import output_targets, publish
 from medmlx_core.outputs import artifact
-from medmlx_core.weights import model_folder, weights_revision
+from medmlx_core.weights import weights_file, weights_revision
 
 from mlx_segment_ct.labels import CT_RULES, InteractivePrompt, LabelRules, Prompt, label_rules
 
@@ -241,7 +242,10 @@ def run(
     destination = output_targets(
         output_dir, {"mask": MASK_FILENAME}, overwrite=overwrite, inputs=sources
     )["mask"]
-    weights_dir = _weights_dir(model_folder(model, weights_path), correction=point_mode)
+    automatic_file = weights_file(model, weights_path, AUTOMATIC_WEIGHTS)
+    if point_mode:
+        weights_file(model, weights_path, CORRECTION_WEIGHTS)
+    weights_dir = automatic_file.parent
     return _infer_and_publish(
         weights_dir,
         image_file,
@@ -284,7 +288,7 @@ def _infer_and_publish(
         mlx_default_device_name,
     )
 
-    mx = cast("CoreRuntime", import_mlx())
+    mx = cast("MlxRuntime", import_mlx())
     # MLX memory limits and the peak counter are shared by requests in this process.
     with _INFERENCE_LOCK:
         mx.synchronize()
@@ -402,7 +406,7 @@ def resolve_interactive_request(
 
 
 def _interactive(
-    mx: CoreRuntime,
+    mx: MlxRuntime,
     weights_dir: Path,
     image_file: Path,
     destination: Path,
@@ -529,7 +533,7 @@ def _interactive(
 
 
 def _segment(
-    mx: CoreRuntime,
+    mx: MlxRuntime,
     weights_dir: Path,
     image_file: Path,
     destination: Path,
@@ -789,27 +793,7 @@ def _nifti_file(value: str | os.PathLike[str], name: str) -> Path:
     return path
 
 
-def _weights_dir(value: str | os.PathLike[str], *, correction: bool) -> Path:
-    """Validate a model folder and the files needed for the requested mode."""
-    directory = Path(value).expanduser()
-    if not directory.is_dir():
-        raise AssetNotReadyError(
-            f"NV-Segment-CT weights directory not found: {directory}",
-            reason=f"missing {directory}",
-            hint=_WEIGHTS_HINT,
-        )
-    required = (AUTOMATIC_WEIGHTS, CORRECTION_WEIGHTS) if correction else (AUTOMATIC_WEIGHTS,)
-    missing = [name for name in required if not (directory / name).is_file()]
-    if missing:
-        raise AssetNotReadyError(
-            f"NV-Segment-CT weights directory {directory} is missing " + ", ".join(missing),
-            reason="missing " + ", ".join(missing),
-            hint=_WEIGHTS_HINT,
-        )
-    return directory
-
-
-def _read_safetensors(mx: CoreRuntime, path: Path) -> dict[str, array]:
+def _read_safetensors(mx: MlxRuntime, path: Path) -> dict[str, array]:
     """Load a named native checkpoint mapping or report an asset error."""
     try:
         raw = mx.load(str(path))
@@ -829,7 +813,7 @@ def _read_safetensors(mx: CoreRuntime, path: Path) -> dict[str, array]:
 
 
 def _check_tensors(
-    mx: CoreRuntime, path: Path, tensors: dict[str, array], shapes: dict[str, tuple[int, ...]]
+    mx: MlxRuntime, path: Path, tensors: dict[str, array], shapes: dict[str, tuple[int, ...]]
 ) -> None:
     """Validate required tensor shapes and float32 dtypes in a checkpoint."""
     missing = sorted(shapes.keys() - tensors.keys())
@@ -851,7 +835,7 @@ def _check_tensors(
 
 
 def load_weights(
-    mx: CoreRuntime, path: Path, shapes: dict[str, tuple[int, ...]]
+    mx: MlxRuntime, path: Path, shapes: dict[str, tuple[int, ...]]
 ) -> dict[str, array]:
     """Load exactly the automatic graph, FP32.
 
@@ -873,7 +857,7 @@ def load_weights(
 
 
 def _load_point_weights(
-    mx: CoreRuntime, directory: Path, *, include_automatic: bool = False
+    mx: MlxRuntime, directory: Path, *, include_automatic: bool = False
 ) -> dict[str, array]:
     """Admit one encoder and the requested decoders, reading each checkpoint once."""
     from mlx_segment_ct.mlx_network import required_shapes

@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
+    from medmlx_core.typing import MlxRuntime
     from mlx.core import array
     from oracle_types import FixtureMetadata, HostArray, NumericFixtures
 
     from mlx_segment_ct._types import (
         ArrayBoundary,
         ArrayValue,
-        CoreRuntime,
         NiftiImage,
         NiftiRuntime,
         NumericInput,
@@ -91,13 +91,13 @@ def load_fixture(name: str) -> tuple[NumericFixtures, FixtureMetadata]:
     return arrays, info
 
 
-def native(mx: CoreRuntime, value: NumericInput) -> array:
+def native(mx: MlxRuntime, value: NumericInput) -> array:
     """Copy a host value into a native array."""
     return cast("ArrayBoundary[array]", mx).array(value)
 
 
 def seeded_weights(
-    shapes: Mapping[str, Sequence[int]], seed: int | HostArray, mx: CoreRuntime
+    shapes: Mapping[str, Sequence[int]], seed: int | HostArray, mx: MlxRuntime
 ) -> dict[str, array]:
     """Build the recorder's seeded synthetic weights as native arrays."""
     named = {key: tuple(shape) for key, shape in shapes.items()}

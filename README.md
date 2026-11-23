@@ -85,8 +85,8 @@ A local weights folder holds `automatic.safetensors` and `correction.safetensors
 | `restoration` | `"scores"` (default) or `"bundle"` (see below) |
 | `overwrite` | `False` by default; an existing mask is never replaced |
 
-- **Input:** voxels must be finite. Spatial units must be millimetres or unknown
-  (assumed millimetres); files marked in metres or microns are rejected.
+- **Input:** voxels must be finite. Spatial units must be millimeters or unknown
+  (assumed millimeters); files marked in meters or microns are rejected.
 - **Mask:** float32 global labels with the source shape and affine, in a new NIfTI
   header. Voxels no window covered are 255.
 - **Return value:** `{"outputs": {"mask": path}, "artifacts": {"mask": ...}, "details": {...}}`.

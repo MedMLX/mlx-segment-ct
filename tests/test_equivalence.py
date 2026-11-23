@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
+from medmlx_core.typing import MlxRuntime
 from reference_support import assert_bitwise, load_fixture, native, seeded_weights
 
 from mlx_segment_ct import (
@@ -19,7 +20,7 @@ from mlx_segment_ct import (
     normalized_point_positions,
     required_shapes,
 )
-from mlx_segment_ct._types import ArrayValue, CoreRuntime, HostArray
+from mlx_segment_ct._types import ArrayValue, HostArray
 from mlx_segment_ct.mlx_point import SharedPointAutomatic
 
 if TYPE_CHECKING:
@@ -35,14 +36,14 @@ def assert_numerical(actual: ArrayValue, expected: HostArray) -> None:
     np.testing.assert_allclose(np.asarray(actual), expected, rtol=0, atol=1e-6)
 
 
-def fixture_weights(name: str, mx: CoreRuntime) -> tuple[NumericFixtures, dict[str, array]]:
+def fixture_weights(name: str, mx: MlxRuntime) -> tuple[NumericFixtures, dict[str, array]]:
     """Load a graph recording and its seeded native weights."""
     data, info = load_fixture(name)
     shapes = cast("GraphMetadata", info)["weight_shapes"]
     return data, seeded_weights(shapes, data["weight_seed"], mx)
 
 
-def test_upsample_spatial_parities(mx: CoreRuntime) -> None:
+def test_upsample_spatial_parities(mx: MlxRuntime) -> None:
     """Compare upsampling across spatial parity cases with the source recording."""
     data, _ = load_fixture("upsample")
     rng = np.random.default_rng(int(data["seed"]))
@@ -53,14 +54,14 @@ def test_upsample_spatial_parities(mx: CoreRuntime) -> None:
     assert_numerical(module(native(mx, data["image"])), data["output"])
 
 
-def test_feature_linear(mx: CoreRuntime) -> None:
+def test_feature_linear(mx: MlxRuntime) -> None:
     """Compare feature projections with the source recording."""
     data, weights = fixture_weights("feature_linear", mx)
     model = FeatureModel(weights, mx=mx, branch="up_layers_auto")
     assert_numerical(model.linear(native(mx, data["values"]), "class_head.mlp.0"), data["output"])
 
 
-def test_point_tokens_transformer_and_long_attention(mx: CoreRuntime) -> None:
+def test_point_tokens_transformer_and_long_attention(mx: MlxRuntime) -> None:
     """Compare point tokens, the two-way transformer and tiled long attention."""
     data, weights = fixture_weights("point_transformer", mx)
     model = PointModel(weights, mx=mx)
@@ -107,7 +108,7 @@ def test_checkpoint_key_and_shape_mapping() -> None:
 
 
 @pytest.mark.parametrize("kind", ["feature", "automatic", "point"])
-def test_full_model_equivalence_on_metal(kind: str, mx: CoreRuntime) -> None:
+def test_full_model_equivalence_on_metal(kind: str, mx: MlxRuntime) -> None:
     """Compare seeded full-network native output with the recorded source."""
     data, weights = fixture_weights(f"full_{kind}", mx)
     image = native(mx, data["image"])
@@ -124,7 +125,7 @@ def test_full_model_equivalence_on_metal(kind: str, mx: CoreRuntime) -> None:
         np.testing.assert_array_equal(np.asarray(actual) > 0, data["output"] > 0)
 
 
-def test_shared_encoder_preserves_both_decoder_logits(mx: CoreRuntime) -> None:
+def test_shared_encoder_preserves_both_decoder_logits(mx: MlxRuntime) -> None:
     """Reuse one encoder while preserving recorded point scores and separate auto scores."""
     data, weights = fixture_weights("full_point", mx)
     auto_only = {name: shape for name, shape in required_shapes().items() if name not in weights}

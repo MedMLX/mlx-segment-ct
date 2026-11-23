@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from medmlx_core.typing import MetalKernel
-
-from mlx_segment_ct._types import CoreRuntime
+from medmlx_core.typing import MlxRuntime
 
 if TYPE_CHECKING:
     from mlx.core import array
@@ -143,7 +141,7 @@ class AutomaticUpsample:
     workspaces.
     """
 
-    def __init__(self, weight: array, *, mx: CoreRuntime) -> None:
+    def __init__(self, weight: array, *, mx: MlxRuntime) -> None:
         """Pack the weights in tap, input channel, and output channel order."""
         self.mx = mx
         self.in_channels, self.out_channels = weight.shape[:2]
@@ -151,16 +149,13 @@ class AutomaticUpsample:
             mx.reshape(mx.transpose(weight, (2, 3, 4, 0, 1)), (27, *weight.shape[:2]))
         )
         mx.eval(self.weights)
-        self.kernel = cast(
-            MetalKernel,
-            mx.fast.metal_kernel(
-                name="vista_ordered_stride2_deconv",
-                input_names=["X", "W", "SKIP"],
-                output_names=["Y"],
-                source=_SOURCE,
-                header="#include <metal_simdgroup_matrix>\n#pragma clang fp contract(off)\n",
-                compile_options={"math_mode": "safe"},
-            ),
+        self.kernel = mx.fast.metal_kernel(
+            name="vista_ordered_stride2_deconv",
+            input_names=["X", "W", "SKIP"],
+            output_names=["Y"],
+            source=_SOURCE,
+            header="#include <metal_simdgroup_matrix>\n#pragma clang fp contract(off)\n",
+            compile_options={"math_mode": "safe"},
         )
 
     def __call__(self, x: array, *, skip: array | None = None) -> array:
