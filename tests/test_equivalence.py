@@ -32,7 +32,7 @@ def assert_numerical(actual: ArrayValue, expected: HostArray) -> None:
     """Compare native results with recorded values at fixed absolute tolerance."""
     # Torch CPU and Metal reductions/transcendentals are platform dependent, so compare
     # with the 1e-6 absolute bound of the seeded point decoder suite (the Metal run is
-    # recorded in tests/fixtures/numerical-parity-20261013.json).
+    # recorded in tests/fixtures/numerical-parity.json).
     np.testing.assert_allclose(np.asarray(actual), expected, rtol=0, atol=1e-6)
 
 

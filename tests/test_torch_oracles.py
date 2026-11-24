@@ -57,7 +57,7 @@ def test_decoder_upsampling_all_spatial_parities(channels: int, mx: MlxRuntime) 
     mx.eval(upsampled)
     actual = cast("HostArray", np.asarray(upsampled))
     # Decoder-width upsampling keeps a 1e-4 absolute/relative bound (the record's
-    # existing_decoder_width_atol/rtol in tests/fixtures/numerical-parity-20261013.json).
+    # existing_decoder_width_atol/rtol in tests/fixtures/numerical-parity.json).
     np.testing.assert_allclose(actual, data["output"], rtol=1e-4, atol=1e-4)
 
 
