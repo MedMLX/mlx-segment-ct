@@ -124,7 +124,7 @@ for (uint i = 0; i < ROW_FRAGMENTS; ++i) {
             Y[index] = ADD_SKIP ? output[i][j].x + SKIP[index] : output[i][j].x;
         }
         if (FULL_COLUMNS || oc + 1 < OUT_CHANNELS) {
-            uint next = index + OUTPUT_SPATIAL;
+            Index next = index + OUTPUT_SPATIAL;
             Y[next] = ADD_SKIP ? output[i][j].y + SKIP[next] : output[i][j].y;
         }
     }
