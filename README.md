@@ -6,7 +6,7 @@ Segment CT anatomy automatically or with anatomy names and clicks, using NVIDIA 
 
 [![PyPI](https://img.shields.io/pypi/v/mlx-segment-ct)](https://pypi.org/project/mlx-segment-ct/)
 [![Python](https://img.shields.io/pypi/pyversions/mlx-segment-ct)](https://pypi.org/project/mlx-segment-ct/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/mlx-segment-ct/blob/v0.4.1/LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/mlx-segment-ct/blob/v0.4.2/LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-MLX-black?logo=apple)](https://github.com/ml-explore/mlx)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97_Hugging_Face-weights-yellow)](https://huggingface.co/MedMLX/vista3d-ct-mlx)
 [![MedMLX](https://img.shields.io/badge/MedMLX-runtime-A51C30)](https://github.com/MedMLX/medmlx)
@@ -33,7 +33,7 @@ Segment CT anatomy automatically or with anatomy names and clicks, using NVIDIA 
 ```bash
 uv venv --python 3.13
 source .venv/bin/activate
-uv pip install "mlx-segment-ct>=0.4.1"
+uv pip install "mlx-segment-ct>=0.4.2"
 ```
 
 ## Run
@@ -210,4 +210,4 @@ For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-wor
 
 ## License
 
-[Apache-2.0](https://github.com/MedMLX/mlx-segment-ct/blob/v0.4.1/LICENSE). See [third-party notices](https://github.com/MedMLX/mlx-segment-ct/blob/v0.4.1/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms.
+[Apache-2.0](https://github.com/MedMLX/mlx-segment-ct/blob/v0.4.2/LICENSE). See [third-party notices](https://github.com/MedMLX/mlx-segment-ct/blob/v0.4.2/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms.
