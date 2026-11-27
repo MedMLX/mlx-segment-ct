@@ -416,7 +416,7 @@ class RollingMetricsBuilder(TypedDict):
 class NumericArrayArithmetic[ArrayT](Protocol):
     """Native and NumPy arrays accept corresponding arrays and NumPy scalars.
 
-    MLX 0.32.3 accepts the NumPy reduction scalars used by host-injected point
+    MLX 0.32.5 accepts the NumPy reduction scalars used by host-injected point
     fixtures; its bundled array operator declaration omits those scalar types.
     """
 
